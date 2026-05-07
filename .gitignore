@@ -1,10 +1,129 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+#blanket git ingore for now made by my good friend claude ai
 
-# Virtual environments
-.venv
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---- uv / venv ----
+.venv/
+venv/
+env/
+# Keep uv.lock committed for reproducible installs across Mac + Linux.
+# Do NOT add uv.lock here.
+
+# ---- Editors / OS ----
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- Secrets / local config ----
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.toml
+secrets/
+
+# ---- ML / experiments ----
+wandb/
+runs/
+lightning_logs/
+tb_logs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+# Allow small reference weights if you ever commit one intentionally:
+!checkpoints/.gitkeep
+
+# ---- Data / logs ----
+# Telemetry from bench runs, sysid captures, etc.
+# Keep these OUT of git. Use LFS or external storage for canonical reference logs.
+data/
+logs/
+*.csv
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.tfrecord
+*.bag
+# Allow tiny example/fixture data for tests:
+!tests/**/*.csv
+!tests/**/fixtures/**
+
+# ---- Plots / media output ----
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.mov
+# But keep docs/build-log images and brand assets:
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.gif
+!docs/**/*.mp4
+!assets/**
+
+# ---- CAD / 3D / mesh outputs ----
+# Big binary geometry. Either use Git LFS or link to Onshape and keep these out.
+*.stl
+*.STL
+*.step
+*.STEP
+*.stp
+*.3mf
+*.f3d
+*.ipt
+*.iam
+*.sldprt
+*.sldasm
+*.x_t
+*.x_b
+# Slicer output
+*.gcode
+*.3mf.gcode
+
+# ---- Sim / robotics artifacts ----
+# Generated URDFs, meshes pulled by onshape-to-robot, MuJoCo caches
+sim/generated/
+urdf/generated/
+*.mjb            # MuJoCo binary model cache
+mujoco_log.txt
+isaac_sim_logs/
+
+# ---- Firmware build output ----
+# PlatformIO / Arduino / Teensy build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+*.hex
+*.elf
+*.bin
+*.map
+*.lst
+# Keep firmware source under firmware/ tracked, just ignore build artifacts above
+
+# ---- Misc ----
+*.log
+*.tmp
+*.bak
+*~
