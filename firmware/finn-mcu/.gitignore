@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# clangd compilation database (machine-specific absolute paths; regenerate with tools/gen-compiledb.sh)
+compile_commands.json

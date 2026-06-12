@@ -1,0 +1,11 @@
+# clangd config for the Teensy firmware.
+#
+# Suppress one header-only false positive: arm-none-eabi-gcc defines int32_t as
+# `long int`, so Teensy's `int32_t random(void)` (WProgram.h) and newlib's
+# `long random(void)` (stdlib.h) are the SAME signature -- a harmless
+# redeclaration, which is why the real build compiles cleanly. clangd parses
+# with int32_t == int and sees a return-type-only overload, so it errors. The
+# conflict is in vendor headers we don't control; suppress just that diagnostic.
+Diagnostics:
+  Suppress:
+    - ovl_diff_return_type
