@@ -1,0 +1,66 @@
+schema_version: 1
+
+pipeline:
+  output_model: finn_sim
+  compiler_meshdir: ../model/assets
+
+root_body:
+  source_name: base_2
+  target_name: base_link
+  freejoint_name: root_freejoint
+  initial_clearance_m: 0.003
+
+selectors:
+  sites:
+    imu: imu
+    base: base
+  wheels:
+    left:
+      body: left_wheel
+      joint: left_wheel
+      center_site: left_wheel_center
+    right:
+      body: right_wheel
+      joint: right_wheel
+      center_site: right_wheel_center
+
+actuators:
+  motor_prefix: motor
+  # moteus r4.11 driving a direct-drive hoverboard motor via FOC is commanded in
+  # output torque (N*m), so keep wheels.*.gear_ratio = 1 and let ctrlrange be the
+  # real output-torque limit. gear_ratio != 1 only applies if a mechanical
+  # reduction sits between the rotor and the wheel.
+
+collisions:
+  # Wheels become analytic cylinders for clean rolling contact. The chassis keeps
+  # its convex-hull mesh collisions so the full robot collides with the world the
+  # way the real one will; chassis parts share base_link, so MuJoCo disables
+  # collisions among them and only world contacts are computed.
+  remove_wheel_mesh_collisions: true
+  remove_chassis_mesh_collisions: false
+  preserve_collision_meshes: []
+  wheels:
+    class: collision
+    material: motor_tire_material
+    condim: 6
+  primitive_rules: []
+
+sensors:
+  imu:
+    site: imu
+    gyro: imu_gyro
+    accelerometer: imu_accelerometer
+    framequat: imu_quat
+  base:
+    site: base
+    framepos: base_pos
+    framequat: base_quat
+  wheel_prefix: wheel
+
+scene:
+  merge_visual: true
+  merge_assets: true
+  merge_worldbody: true
+
+validation:
+  zero_control_steps: 25

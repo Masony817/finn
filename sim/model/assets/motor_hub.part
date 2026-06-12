@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ed1c90944582329b3a0c4b53",
+    "documentMicroversion": "40761ba3b6c81afe15fab13f",
+    "elementId": "54be77b04f4b5ba2056d0b73",
+    "fullConfiguration": "default",
+    "id": "M6xtaOKkg+zzXVu9E",
+    "isStandardContent": false,
+    "name": "motor-hub <1>",
+    "partId": "JHD",
+    "suppressed": false,
+    "type": "Part"
+}

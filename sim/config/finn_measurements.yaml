@@ -1,0 +1,105 @@
+# Fill this file from bench measurements, CAD-reviewed values, or normalized
+# Moteus calibration outputs. Strict mode rejects source: todo and source:
+# estimated, so the generated sim cannot quietly depend on placeholders.
+schema_version: 1
+
+wheels:
+  left:
+    radius_m:
+      value:
+      unit: m
+      source: todo
+      notes: Measure loaded tire radius, not nominal CAD radius.
+    width_m:
+      value:
+      unit: m
+      source: todo
+    mass_kg:
+      value:
+      unit: kg
+      source: todo
+      notes: Optional; leave todo/null to preserve exported CAD inertial.
+    torque_limit_nm:
+      value:
+      unit: N*m
+      source: todo
+    gear_ratio:
+      value:
+      unit: ratio
+      source: todo
+      notes: 1 for a direct-drive hoverboard motor; FOC torque is commanded at the output.
+    command_sign:
+      value:
+      unit: sign
+      source: todo
+      notes: Use 1 or -1 after checking real command convention.
+    damping:
+      value:
+      unit: N*m*s/rad
+      source: todo
+    armature:
+      value:
+      unit: kg*m^2
+      source: todo
+    frictionloss:
+      value:
+      unit: N*m
+      source: todo
+
+  right:
+    radius_m:
+      value:
+      unit: m
+      source: todo
+      notes: Measure loaded tire radius, not nominal CAD radius.
+    width_m:
+      value:
+      unit: m
+      source: todo
+    mass_kg:
+      value:
+      unit: kg
+      source: todo
+      notes: Optional; leave todo/null to preserve exported CAD inertial.
+    torque_limit_nm:
+      value:
+      unit: N*m
+      source: todo
+    gear_ratio:
+      value:
+      unit: ratio
+      source: todo
+      notes: 1 for a direct-drive hoverboard motor; FOC torque is commanded at the output.
+    command_sign:
+      value:
+      unit: sign
+      source: todo
+      notes: Use 1 or -1 after checking real command convention.
+    damping:
+      value:
+      unit: N*m*s/rad
+      source: todo
+    armature:
+      value:
+      unit: kg*m^2
+      source: todo
+    frictionloss:
+      value:
+      unit: N*m
+      source: todo
+
+contact:
+  tire:
+    friction:
+      value:
+      unit: slide torsional rolling
+      source: todo
+      notes: MuJoCo geom friction vector.
+    solref:
+      value:
+      unit: timeconst dampratio
+      source: todo
+    solimp:
+      value:
+      unit: dmin dmax width midpoint power
+      source: todo

@@ -37,6 +37,7 @@ Thumbs.db
 *.local.yaml
 *.local.toml
 secrets/
+.bashrc
 
 # ---- ML / experiments ----
 wandb/
