@@ -54,3 +54,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Environment smoke-check: LQR uses conventional uppercase matrix names
+# (A, B, Q, R, P, K), and one inline MuJoCo XML string is intentionally long.
+"tools/check_env.py" = ["N806", "E501"]

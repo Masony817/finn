@@ -21,7 +21,10 @@ env/
 # Do NOT add uv.lock here.
 
 # ---- Editors / OS ----
-.vscode/
+# Ignore .vscode contents but allow the shared editor config through. Use
+# `.vscode/*` (not `.vscode/`) so the `!` re-includes work -- git won't descend
+# into a fully-excluded directory.
+.vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
 .idea/

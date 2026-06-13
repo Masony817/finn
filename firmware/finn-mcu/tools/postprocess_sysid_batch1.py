@@ -33,8 +33,7 @@ def write_derived_yaml(out_path: Path, rows: list[dict[str, str]], phases: list[
         "# Placeholder derived values for Batch 1. No model parameters are fitted yet.\n"
         f"telemetry_rows: {len(rows)}\n"
         f"phase_count: {len(phases)}\n"
-        "phases:\n"
-        + "".join(f"  - {phase}\n" for phase in phases)
+        "phases:\n" + "".join(f"  - {phase}\n" for phase in phases)
     )
 
 

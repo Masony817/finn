@@ -1,4 +1,5 @@
 """env smoke test for finn. good to run after `uv sync` to check all dependencies."""
+
 import importlib
 import platform
 import sys
@@ -30,9 +31,11 @@ def main():
 
     # lqr sanity check
     print("\ncontrol math:")
+
     def lqr_check():
         import numpy as np
         from scipy.linalg import solve_continuous_are
+
         # toy double integrator: x_ddot = u for sanity
         A = np.array([[0, 1], [0, 0]])
         B = np.array([[0], [1]])
@@ -41,23 +44,29 @@ def main():
         P = solve_continuous_are(A, B, Q, R)
         K = np.linalg.solve(R, B.T @ P)
         return f"K = {K.flatten().round(3).tolist()}"
+
     results.append(check("solve_continuous_are", lqr_check))
 
     # hardware comms (imports only)
     print("\nhardware comms:")
+
     def moteus_check():
         import moteus
+
         assert hasattr(moteus, "Controller") and hasattr(moteus, "Fdcanusb")
         return "controller, fdcanusb in moteus lib"
+
     results.append(check("moteus", moteus_check))
 
     def moteus_cli_check():
         import shutil
+
         tview = shutil.which("tview")
         mtool = shutil.which("moteus_tool")
         if not (tview and mtool):
             raise RuntimeError(f"tview={tview}, moteus_tool={mtool}")
         return "tview + moteus_tool on PATH"
+
     results.append(check("moteus cli", moteus_cli_check))
 
     results.append(check("serial", lambda: importlib.import_module("serial").__version__))
@@ -65,18 +74,24 @@ def main():
 
     # sim
     print("\nsim:")
+
     def mujoco_check():
         import mujoco
-        model = mujoco.MjModel.from_xml_string("<mujoco><worldbody><body><geom size='1'/></body></worldbody></mujoco>")
+
+        model = mujoco.MjModel.from_xml_string(
+            "<mujoco><worldbody><body><geom size='1'/></body></worldbody></mujoco>"
+        )
         data = mujoco.MjData(model)
         mujoco.mj_step(model, data)
         return f"version {mujoco.__version__}, stepped a model"
+
     results.append(check("mujoco", mujoco_check))
 
     # torch (only if ml optional dep installed)
     print("\nml (optional, requires --extra ml):")
     try:
         import torch  # pyright: ignore[reportMissingImports] -- torch is optional for now
+
         print(f"  OK    torch: {torch.__version__}")
         if sys.platform == "linux":
             cuda = torch.cuda.is_available()

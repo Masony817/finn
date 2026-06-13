@@ -1,0 +1,17 @@
+{
+  // Let clangd run the Teensy ARM cross-compiler to discover its built-in
+  // system include paths (stdlib.h, string.h, math.h, etc.). Without this,
+  // clangd falls back to its own headers and reports false "file not found" /
+  // "undeclared identifier" errors for standard library symbols.
+  // The glob is intentionally home-agnostic so it matches any contributor's
+  // PlatformIO toolchain path on macOS or Linux.
+  "clangd.arguments": [
+    "--query-driver=**/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-*",
+    "--background-index",
+    "--header-insertion=never"
+  ],
+
+  // Disable the Microsoft C/C++ extension's IntelliSense engine so it does not
+  // emit a second, conflicting set of diagnostics alongside clangd.
+  "C_Cpp.intelliSenseEngine": "disabled"
+}

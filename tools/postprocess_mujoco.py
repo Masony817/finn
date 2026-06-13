@@ -911,9 +911,7 @@ def validate_mujoco(
     }
 
 
-def init_measurements_template(
-    robot_path: Path, output_path: Path, *, force: bool = False
-) -> None:
+def init_measurements_template(robot_path: Path, output_path: Path, *, force: bool = False) -> None:
     if output_path.exists() and not force:
         raise PostprocessError(
             f"refusing to overwrite existing file without --force: {output_path}"
