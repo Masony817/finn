@@ -28,11 +28,15 @@ constexpr uint16_t kMoteusMinReceiveWaitUs = 3000; // controller reply timeout
 constexpr float kHardTorqueLimitNm = 0.25f; // absolute torque ceiling enforcement
 constexpr float kMoteusWatchdogTimeoutS = 0.05f; //50ms self stop without fresh command
 constexpr uint8_t kMaxConsecutiveMoteusMisses = 3; // fault limit on missed commands
+constexpr float kMaxMoteusTempC = 60.0f; // conservative first-run cutoff.
+constexpr uint32_t kMaxBatchElapsedMs = 420000; // top-level guard; scripted max is about 294s.
 
-constexpr uint32_t kControlPeriodUs = 20000;    // 50 Hz command loop.
-constexpr uint32_t kTelemetryPeriodUs = 20000;  // 50 Hz CSV log stream while running.
+constexpr uint32_t kControlPeriodUs = 10000;    // 100 Hz command loop.
+constexpr uint32_t kTelemetryPeriodUs = 10000;  // 100 Hz CSV log stream while running.
 constexpr uint32_t kIdleTelemetryPeriodUs = 1000000;  // 1 Hz idle/status heartbeat.
 constexpr uint32_t kIdleStopPeriodUs = 1000000;  // Reassert stop at 1 Hz when idle/faulted.
+constexpr float kMotionVelocityRevS = 0.02f;
+constexpr float kMotionPositionRev = 0.01f;
 
 // The official mjbots Teensy example uses 1 Mbps arbitration and data rate
 // with BRS disabled. That is intentionally conservative for early bringup.
@@ -112,6 +116,7 @@ enum class SystemState : uint8_t { //master interlock
 enum class SegmentMode : uint8_t { //what a script step does
   kStop, //hold both stopped
   kTorque, //constant torque for a fixed time
+  kTorqueUntilMotion, //constant torque until breakaway/motion is detected
   kSpinupUntilVelocity, //drive until target speed
   kCoastUntilSlow, //release torque, watch it slow down
 };
@@ -133,55 +138,46 @@ struct BatchSegment { //one row of the test script
   float exit_abs_velocity_rev_s; //speed threshold for spinup/coast exit
 };
 
-// the whole experiment, top to bottom
-constexpr BatchSegment kBatch1Segments[] = {
-    {"settle_stop", SegmentMode::kStop, WheelSelect::kNone, 2000, 0, 0.0f, 0.0f, 0.0f}, //start clean
+constexpr BatchSegment makeSegment(const char* name, const SegmentMode mode,
+                                   const WheelSelect observed_wheel,
+                                   const uint32_t max_duration_ms,
+                                   const uint32_t min_duration_ms,
+                                   const float left_torque_nm,
+                                   const float right_torque_nm,
+                                   const float exit_abs_velocity_rev_s) {
+  return BatchSegment{name, mode, observed_wheel, max_duration_ms, min_duration_ms,
+                      left_torque_nm, right_torque_nm, exit_abs_velocity_rev_s};
+}
 
-    // tiny torque to find where the wheel just starts to move (deadband)
-    {"left_deadband_pos_0p04", SegmentMode::kTorque, WheelSelect::kLeft, 700, 0, 0.04f, 0.0f, 0.0f},
-    {"left_settle_a", SegmentMode::kStop, WheelSelect::kLeft, 1000, 0, 0.0f, 0.0f, 0.0f},
-    {"left_deadband_neg_0p04", SegmentMode::kTorque, WheelSelect::kLeft, 700, 0, -0.04f, 0.0f, 0.0f},
-    {"left_settle_b", SegmentMode::kStop, WheelSelect::kLeft, 1000, 0, 0.0f, 0.0f, 0.0f},
-
-    {"right_deadband_pos_0p04", SegmentMode::kTorque, WheelSelect::kRight, 700, 0, 0.0f, 0.04f, 0.0f}, //same for right
-    {"right_settle_a", SegmentMode::kStop, WheelSelect::kRight, 1000, 0, 0.0f, 0.0f, 0.0f},
-    {"right_deadband_neg_0p04", SegmentMode::kTorque, WheelSelect::kRight, 700, 0, 0.0f, -0.04f, 0.0f},
-    {"right_settle_b", SegmentMode::kStop, WheelSelect::kRight, 1000, 0, 0.0f, 0.0f, 0.0f},
-
-    // left torque steps then spinup + coast down (positive direction)
-    {"left_step_pos_0p08", SegmentMode::kTorque, WheelSelect::kLeft, 1000, 0, 0.08f, 0.0f, 0.0f},
-    {"left_step_pos_0p12", SegmentMode::kTorque, WheelSelect::kLeft, 1000, 0, 0.12f, 0.0f, 0.0f},
-    {"left_step_pos_0p18", SegmentMode::kTorque, WheelSelect::kLeft, 1000, 0, 0.18f, 0.0f, 0.0f},
-    {"left_spinup_pos", SegmentMode::kSpinupUntilVelocity, WheelSelect::kLeft, 3000, 500, 0.12f, 0.0f, 0.70f},
-    {"left_coast_pos", SegmentMode::kCoastUntilSlow, WheelSelect::kLeft, 5000, 800, 0.0f, 0.0f, 0.05f}, //coast = friction curve
-
-    {"left_step_neg_0p08", SegmentMode::kTorque, WheelSelect::kLeft, 1000, 0, -0.08f, 0.0f, 0.0f}, //same, negative direction
-    {"left_step_neg_0p12", SegmentMode::kTorque, WheelSelect::kLeft, 1000, 0, -0.12f, 0.0f, 0.0f},
-    {"left_step_neg_0p18", SegmentMode::kTorque, WheelSelect::kLeft, 1000, 0, -0.18f, 0.0f, 0.0f},
-    {"left_spinup_neg", SegmentMode::kSpinupUntilVelocity, WheelSelect::kLeft, 3000, 500, -0.12f, 0.0f, 0.70f},
-    {"left_coast_neg", SegmentMode::kCoastUntilSlow, WheelSelect::kLeft, 5000, 800, 0.0f, 0.0f, 0.05f},
-
-    {"right_step_pos_0p08", SegmentMode::kTorque, WheelSelect::kRight, 1000, 0, 0.0f, 0.08f, 0.0f}, //now the right wheel
-    {"right_step_pos_0p12", SegmentMode::kTorque, WheelSelect::kRight, 1000, 0, 0.0f, 0.12f, 0.0f},
-    {"right_step_pos_0p18", SegmentMode::kTorque, WheelSelect::kRight, 1000, 0, 0.0f, 0.18f, 0.0f},
-    {"right_spinup_pos", SegmentMode::kSpinupUntilVelocity, WheelSelect::kRight, 3000, 500, 0.0f, 0.12f, 0.70f},
-    {"right_coast_pos", SegmentMode::kCoastUntilSlow, WheelSelect::kRight, 5000, 800, 0.0f, 0.0f, 0.05f},
-
-    {"right_step_neg_0p08", SegmentMode::kTorque, WheelSelect::kRight, 1000, 0, 0.0f, -0.08f, 0.0f},
-    {"right_step_neg_0p12", SegmentMode::kTorque, WheelSelect::kRight, 1000, 0, 0.0f, -0.12f, 0.0f},
-    {"right_step_neg_0p18", SegmentMode::kTorque, WheelSelect::kRight, 1000, 0, 0.0f, -0.18f, 0.0f},
-    {"right_spinup_neg", SegmentMode::kSpinupUntilVelocity, WheelSelect::kRight, 3000, 500, 0.0f, -0.12f, 0.70f},
-    {"right_coast_neg", SegmentMode::kCoastUntilSlow, WheelSelect::kRight, 5000, 800, 0.0f, 0.0f, 0.05f},
-
-    {"final_stop", SegmentMode::kStop, WheelSelect::kNone, 2000, 0, 0.0f, 0.0f, 0.0f}, //done
+enum class SegmentEndReason : uint8_t {
+  kNone,
+  kTimeout,
+  kMotionReached,
+  kSpeedReached,
+  kSlowReached,
 };
 
-constexpr size_t kBatch1SegmentCount = sizeof(kBatch1Segments) / sizeof(kBatch1Segments[0]); //count at compile time
+constexpr float kBreakawayTorquesNm[] = {0.04f, 0.06f, 0.08f, 0.10f, 0.12f, 0.14f, 0.16f, 0.18f, 0.20f, 0.22f};
+constexpr float kDynamicTorquesNm[] = {0.12f, 0.16f, 0.20f, 0.24f};
+constexpr float kCoastTargetsRevS[] = {0.75f, 1.50f, 2.50f, 3.50f};
+constexpr size_t kDirectionCount = 4; // left pos, left neg, right pos, right neg
+constexpr size_t kSignSegmentCount = kDirectionCount * 2;
+constexpr size_t kBreakawayRounds = 3;
+constexpr size_t kBreakawaySegmentCount = kBreakawayRounds * kDirectionCount * (sizeof(kBreakawayTorquesNm) / sizeof(kBreakawayTorquesNm[0])) * 2;
+constexpr size_t kDynamicSegmentCount = kDirectionCount * (sizeof(kDynamicTorquesNm) / sizeof(kDynamicTorquesNm[0])) * 2;
+constexpr size_t kCoastSegmentCount = kDirectionCount * (sizeof(kCoastTargetsRevS) / sizeof(kCoastTargetsRevS[0])) * 3;
+constexpr size_t kBatch1SegmentCount = 1 + kSignSegmentCount + kBreakawaySegmentCount + kDynamicSegmentCount + kCoastSegmentCount + 1;
 
 // run-state
 SystemState state = SystemState::kSafeIdle;
 size_t active_segment_index = 0; //which segment is running
+uint32_t batch_start_ms = 0; //top-level run timeout anchor
 uint32_t active_segment_start_ms = 0; //when it started
+BatchSegment active_segment = makeSegment(
+    "idle", SegmentMode::kStop, WheelSelect::kNone, 0, 0, 0.0f, 0.0f, 0.0f);
+char active_segment_name[72] = "idle";
+float active_segment_start_left_pos_rev = 0.0f;
+float active_segment_start_right_pos_rev = 0.0f;
 uint32_t next_control_us = 0; //scheduler deadlines
 uint32_t next_telemetry_us = 0;
 uint32_t next_idle_stop_us = 0;
@@ -196,6 +192,151 @@ float clampFloat(const float value, const float low, const float high) { //min/m
   if (value < low) return low;
   if (value > high) return high;
   return value;
+}
+
+void formatFloatTag(const float value, char* out, const size_t out_size) {
+  const int scaled = static_cast<int>(roundf(value * 100.0f));
+  snprintf(out, out_size, "%dp%02d", scaled / 100, abs(scaled % 100));
+}
+
+const char* sideName(const WheelSelect wheel) {
+  if (wheel == WheelSelect::kLeft) return "left";
+  if (wheel == WheelSelect::kRight) return "right";
+  return "none";
+}
+
+void directionFromIndex(const size_t direction_index, WheelSelect* wheel, int8_t* sign) {
+  switch (direction_index % kDirectionCount) {
+    case 0:
+      *wheel = WheelSelect::kLeft;
+      *sign = 1;
+      return;
+    case 1:
+      *wheel = WheelSelect::kLeft;
+      *sign = -1;
+      return;
+    case 2:
+      *wheel = WheelSelect::kRight;
+      *sign = 1;
+      return;
+    default:
+      *wheel = WheelSelect::kRight;
+      *sign = -1;
+      return;
+  }
+}
+
+BatchSegment buildDirectedSegment(const char* prefix, const WheelSelect wheel, const int8_t sign,
+                                  const float magnitude_nm, const SegmentMode mode,
+                                  const uint32_t max_duration_ms, const uint32_t min_duration_ms,
+                                  const float exit_abs_velocity_rev_s) {
+  char tag[24];
+  formatFloatTag(magnitude_nm, tag, sizeof(tag));
+  const char* dir = sign > 0 ? "pos" : "neg";
+  snprintf(active_segment_name, sizeof(active_segment_name), "%s_%s_%s_%s",
+           prefix, sideName(wheel), dir, tag);
+  const float left_torque = (wheel == WheelSelect::kLeft) ? sign * magnitude_nm : 0.0f;
+  const float right_torque = (wheel == WheelSelect::kRight) ? sign * magnitude_nm : 0.0f;
+  return makeSegment(active_segment_name, mode, wheel, max_duration_ms, min_duration_ms,
+                     left_torque, right_torque, exit_abs_velocity_rev_s);
+}
+
+BatchSegment buildSettleSegment(const char* prefix, const WheelSelect wheel, const int8_t sign,
+                                const float magnitude, const uint32_t duration_ms) {
+  char tag[24];
+  formatFloatTag(magnitude, tag, sizeof(tag));
+  const char* dir = sign > 0 ? "pos" : "neg";
+  snprintf(active_segment_name, sizeof(active_segment_name), "%s_%s_%s_%s_settle",
+           prefix, sideName(wheel), dir, tag);
+  return makeSegment(active_segment_name, SegmentMode::kStop, wheel, duration_ms, 0,
+                     0.0f, 0.0f, 0.0f);
+}
+
+BatchSegment batchSegmentAt(const size_t index) {
+  if (index == 0) {
+    snprintf(active_segment_name, sizeof(active_segment_name), "settle_stop");
+    return makeSegment(active_segment_name, SegmentMode::kStop, WheelSelect::kNone,
+                       2000, 0, 0.0f, 0.0f, 0.0f);
+  }
+
+  size_t local = index - 1;
+  if (local < kSignSegmentCount) {
+    WheelSelect wheel;
+    int8_t sign;
+    directionFromIndex(local / 2, &wheel, &sign);
+    if ((local % 2) == 0) {
+      return buildDirectedSegment("sign", wheel, sign, 0.14f, SegmentMode::kTorqueUntilMotion, 900, 100, 0.0f);
+    }
+    return buildSettleSegment("sign", wheel, sign, 0.14f, 400);
+  }
+
+  local -= kSignSegmentCount;
+  if (local < kBreakawaySegmentCount) {
+    const size_t pair_index = local / 2;
+    const size_t level_count = sizeof(kBreakawayTorquesNm) / sizeof(kBreakawayTorquesNm[0]);
+    const size_t round_index = pair_index / (kDirectionCount * level_count);
+    const size_t round_local = pair_index % (kDirectionCount * level_count);
+    WheelSelect wheel;
+    int8_t sign;
+    directionFromIndex(round_local / level_count, &wheel, &sign);
+    const float torque = kBreakawayTorquesNm[round_local % level_count];
+    char prefix[24];
+    snprintf(prefix, sizeof(prefix), "breakaway_r%u", static_cast<unsigned>(round_index + 1U));
+    if ((local % 2) == 0) {
+      return buildDirectedSegment(prefix, wheel, sign, torque, SegmentMode::kTorqueUntilMotion, 700, 100, 0.0f);
+    }
+    return buildSettleSegment(prefix, wheel, sign, torque, 300);
+  }
+
+  local -= kBreakawaySegmentCount;
+  if (local < kDynamicSegmentCount) {
+    const size_t pair_index = local / 2;
+    const size_t level_count = sizeof(kDynamicTorquesNm) / sizeof(kDynamicTorquesNm[0]);
+    WheelSelect wheel;
+    int8_t sign;
+    directionFromIndex(pair_index / level_count, &wheel, &sign);
+    const float torque = kDynamicTorquesNm[pair_index % level_count];
+    if ((local % 2) == 0) {
+      return buildDirectedSegment("dynamic", wheel, sign, torque, SegmentMode::kTorque, 900, 0, 0.0f);
+    }
+    return buildSettleSegment("dynamic", wheel, sign, torque, 500);
+  }
+
+  local -= kDynamicSegmentCount;
+  if (local < kCoastSegmentCount) {
+    const size_t triple_index = local / 3;
+    const size_t step_in_triple = local % 3;
+    const size_t target_count = sizeof(kCoastTargetsRevS) / sizeof(kCoastTargetsRevS[0]);
+    WheelSelect wheel;
+    int8_t sign;
+    directionFromIndex(triple_index / target_count, &wheel, &sign);
+    const float target = kCoastTargetsRevS[triple_index % target_count];
+    char tag[24];
+    formatFloatTag(target, tag, sizeof(tag));
+    const char* dir = sign > 0 ? "pos" : "neg";
+    if (step_in_triple == 0) {
+      snprintf(active_segment_name, sizeof(active_segment_name), "coast_spinup_%s_%s_%srps",
+               sideName(wheel), dir, tag);
+      const float left_torque = (wheel == WheelSelect::kLeft) ? sign * 0.24f : 0.0f;
+      const float right_torque = (wheel == WheelSelect::kRight) ? sign * 0.24f : 0.0f;
+      return makeSegment(active_segment_name, SegmentMode::kSpinupUntilVelocity, wheel,
+                         3500, 300, left_torque, right_torque, target);
+    }
+    if (step_in_triple == 1) {
+      snprintf(active_segment_name, sizeof(active_segment_name), "coastdown_%s_%s_%srps",
+               sideName(wheel), dir, tag);
+      return makeSegment(active_segment_name, SegmentMode::kCoastUntilSlow, wheel,
+                         5000, 500, 0.0f, 0.0f, 0.05f);
+    }
+    snprintf(active_segment_name, sizeof(active_segment_name), "coastdown_%s_%s_%srps_settle",
+             sideName(wheel), dir, tag);
+    return makeSegment(active_segment_name, SegmentMode::kStop, wheel, 500, 0,
+                       0.0f, 0.0f, 0.0f);
+  }
+
+  snprintf(active_segment_name, sizeof(active_segment_name), "final_stop");
+  return makeSegment(active_segment_name, SegmentMode::kStop, WheelSelect::kNone,
+                     2000, 0, 0.0f, 0.0f, 0.0f);
 }
 
 const char* stateName() { //enum -> string for logs
@@ -215,9 +356,7 @@ const char* stateName() { //enum -> string for logs
 }
 
 const char* activePhaseName() { //current segment name (or state) for logs
-  if (state == SystemState::kRunningBatch1 && active_segment_index < kBatch1SegmentCount) {
-    return kBatch1Segments[active_segment_index].name;
-  }
+  if (state == SystemState::kRunningBatch1 && active_segment_index < kBatch1SegmentCount) return active_segment.name;
   if (state == SystemState::kComplete) return "complete";
   if (state == SystemState::kFault) return "fault";
   return "idle";
@@ -257,7 +396,7 @@ void printHelp() { //operator command list
 }
 
 void printTelemetryHeader() { //csv schema tag + column header so the log is self-describing
-  Serial.println("schema,batch1_v1");
+  Serial.println("schema,batch1_v2");
   Serial.println("data,t_us,state,phase_index,phase,armed,left_cmd_nm,right_cmd_nm,left_mode,left_pos_rev,left_vel_rev_s,left_torque_nm,left_voltage_v,left_temp_c,left_fault,right_mode,right_pos_rev,right_vel_rev_s,right_torque_nm,right_voltage_v,right_temp_c,right_fault,imu_ok,imu_age_ms,imu_qr,imu_qi,imu_qj,imu_qk,imu_accuracy_rad,fault_reason");
 }
 
@@ -422,6 +561,33 @@ bool checkMoteusResult(const char* name, Moteus& controller, MoteusHealth& healt
   return false;
 }
 
+bool checkMoteusTemperatureLimit() {
+  const float left_temp = static_cast<float>(left_moteus.last_result().values.temperature);
+  const float right_temp = static_cast<float>(right_moteus.last_result().values.temperature);
+  if (isfinite(left_temp) && left_temp >= kMaxMoteusTempC) {
+    char reason[96];
+    snprintf(reason, sizeof(reason), "left_moteus_overtemp_%.1fC", static_cast<double>(left_temp));
+    latchFault(reason);
+    return false;
+  }
+  if (isfinite(right_temp) && right_temp >= kMaxMoteusTempC) {
+    char reason[96];
+    snprintf(reason, sizeof(reason), "right_moteus_overtemp_%.1fC", static_cast<double>(right_temp));
+    latchFault(reason);
+    return false;
+  }
+  return true;
+}
+
+bool checkBatchElapsedLimit() {
+  const uint32_t elapsed_ms = millis() - batch_start_ms;
+  if (elapsed_ms <= kMaxBatchElapsedMs) {
+    return true;
+  }
+  latchFault("batch_elapsed_timeout");
+  return false;
+}
+
 bool sendLeftStop() { //stop = de-energize the motor
   const bool ok = left_moteus.SetStop();
   checkMoteusResult("left", left_moteus, left_health, ok);
@@ -493,30 +659,75 @@ float observedAbsVelocityRevS(const BatchSegment& segment) { //watched wheel's a
   return 0.0f;
 }
 
-bool segmentIsComplete(const BatchSegment& segment) { //exit logic for the active segment
+float observedAbsPositionDeltaRev(const BatchSegment& segment) {
+  if (segment.observed_wheel == WheelSelect::kLeft) {
+    return static_cast<float>(fabs(left_moteus.last_result().values.position - active_segment_start_left_pos_rev));
+  }
+  if (segment.observed_wheel == WheelSelect::kRight) {
+    return static_cast<float>(fabs(right_moteus.last_result().values.position - active_segment_start_right_pos_rev));
+  }
+  return 0.0f;
+}
+
+bool observedMotionReached(const BatchSegment& segment) {
+  return observedAbsVelocityRevS(segment) >= kMotionVelocityRevS ||
+         observedAbsPositionDeltaRev(segment) >= kMotionPositionRev;
+}
+
+const char* segmentEndReasonName(const SegmentEndReason reason) {
+  switch (reason) {
+    case SegmentEndReason::kNone:
+      return "none";
+    case SegmentEndReason::kTimeout:
+      return "timeout";
+    case SegmentEndReason::kMotionReached:
+      return "motion_reached";
+    case SegmentEndReason::kSpeedReached:
+      return "speed_reached";
+    case SegmentEndReason::kSlowReached:
+      return "slow_reached";
+  }
+  return "unknown";
+}
+
+SegmentEndReason segmentCompletionReason(const BatchSegment& segment) { //exit logic for the active segment
   const uint32_t elapsed_ms = millis() - active_segment_start_ms;
   if (elapsed_ms >= segment.max_duration_ms) { //hit the time cap, always wins
-    return true;
+    return SegmentEndReason::kTimeout;
   }
   if (elapsed_ms < segment.min_duration_ms) { //honor the min duration first
-    return false;
+    return SegmentEndReason::kNone;
+  }
+
+  if (segment.mode == SegmentMode::kTorqueUntilMotion) {
+    return observedMotionReached(segment) ? SegmentEndReason::kMotionReached : SegmentEndReason::kNone;
   }
 
   const float observed_speed = observedAbsVelocityRevS(segment);
   if (segment.mode == SegmentMode::kSpinupUntilVelocity) {
-    return observed_speed >= segment.exit_abs_velocity_rev_s; //reached target speed
+    return (observed_speed >= segment.exit_abs_velocity_rev_s) ? SegmentEndReason::kSpeedReached : SegmentEndReason::kNone;
   }
   if (segment.mode == SegmentMode::kCoastUntilSlow) {
-    return observed_speed <= segment.exit_abs_velocity_rev_s; //slowed to threshold
+    return (observed_speed <= segment.exit_abs_velocity_rev_s) ? SegmentEndReason::kSlowReached : SegmentEndReason::kNone;
   }
-  return false; //plain torque/stop just run to max_duration
+  return SegmentEndReason::kNone; //plain torque/stop just run to max_duration
+}
+
+void printSegmentEnd(const BatchSegment& segment, const SegmentEndReason reason) {
+  const uint32_t elapsed_ms = millis() - active_segment_start_ms;
+  Serial.printf("event,%lu,segment_end,%s,%s,%s,%lu\n",
+                static_cast<unsigned long>(micros()), stateName(), segment.name,
+                segmentEndReasonName(reason), static_cast<unsigned long>(elapsed_ms));
 }
 
 void startSegment(const size_t index) { //begin a segment, stamp the start time
   active_segment_index = index;
+  active_segment = batchSegmentAt(active_segment_index);
   active_segment_start_ms = millis();
   if (active_segment_index < kBatch1SegmentCount) {
-    printEvent("segment_start", kBatch1Segments[active_segment_index].name);
+    active_segment_start_left_pos_rev = left_moteus.last_result().values.position;
+    active_segment_start_right_pos_rev = right_moteus.last_result().values.position;
+    printEvent("segment_start", active_segment.name);
   }
 }
 
@@ -575,6 +786,10 @@ bool preflightForRun() { //motor go/no-go check before any motion
     return false;
   }
 
+  if (!checkMoteusTemperatureLimit()) {
+    return false;
+  }
+
   return true;
 }
 
@@ -588,6 +803,7 @@ void startBatch1() { //start the run if armed and preflight passes
   }
   fault_reason[0] = '\0';
   state = SystemState::kRunningBatch1;
+  batch_start_ms = millis();
   next_control_us = micros(); //reset the schedulers
   next_telemetry_us = micros();
   startSegment(0);
@@ -664,7 +880,7 @@ void serviceSerial() { //accumulate usb bytes into a line, dispatch on newline
   }
 }
 
-void runBatchTick() { //one 50hz control step while running
+void runBatchTick() { //one 100hz control step while running
   if (!isRunning()) return;
 
   if (!isImuFresh()) { //imu went stale mid-run, but Batch 1 motor sysid can continue
@@ -681,15 +897,23 @@ void runBatchTick() { //one 50hz control step while running
     completeBatch();
     return;
   }
+  if (!checkBatchElapsedLimit()) {
+    return;
+  }
 
-  const BatchSegment& segment = kBatch1Segments[active_segment_index];
+  const BatchSegment& segment = active_segment;
   sendSegmentCommand(segment);
 
   if (state != SystemState::kRunningBatch1) { //a command may have tripped a fault
     return;
   }
+  if (!checkMoteusTemperatureLimit()) {
+    return;
+  }
 
-  if (segmentIsComplete(segment)) {
+  const SegmentEndReason reason = segmentCompletionReason(segment);
+  if (reason != SegmentEndReason::kNone) {
+    printSegmentEnd(segment, reason);
     advanceSegment();
   }
 }
@@ -765,7 +989,7 @@ void loop() { //cooperative scheduler, runs flat out
   serviceImu();
 
   const uint32_t now_us = micros();
-  if (isRunning() && static_cast<int32_t>(now_us - next_control_us) >= 0) { //50hz control tick
+  if (isRunning() && static_cast<int32_t>(now_us - next_control_us) >= 0) { //100hz control tick
     next_control_us += kControlPeriodUs;
     runBatchTick();
   }
