@@ -23,6 +23,7 @@ from typing import TextIO
 
 TOOL_DIR = Path(__file__).resolve().parent
 FIRMWARE_ROOT = TOOL_DIR.parent
+REPO_ROOT = FIRMWARE_ROOT.parents[1]
 
 DEFAULT_BAUD = 115200
 DEFAULT_LOG_ROOT = Path("logs/finn-mcu/serial")
@@ -142,10 +143,39 @@ def send_command(fd: int, command: str) -> None:
     os.write(fd, command.rstrip("\r\n").encode("utf-8") + b"\n")
 
 
-def upload_firmware(env: str) -> int:
-    cmd = ["pio", "run", "-e", env, "-t", "upload"]
+def find_platformio_executable() -> str | None:
+    for name in ("pio", "platformio"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+
+    for path in (
+        REPO_ROOT / ".venv" / "bin" / "pio",
+        REPO_ROOT / ".venv" / "bin" / "platformio",
+        Path.home() / ".platformio" / "penv" / "bin" / "pio",
+        Path.home() / ".platformio" / "penv" / "bin" / "platformio",
+    ):
+        if path.exists() and os.access(path, os.X_OK):
+            return str(path)
+    return None
+
+
+def upload_firmware(env: str, port: str | None = None) -> int:
+    pio = find_platformio_executable()
+    if not pio:
+        print(
+            "PlatformIO executable not found. Install PlatformIO or add `pio`/`platformio` to PATH.",
+            file=sys.stderr,
+        )
+        return 127
+
+    cmd = [pio, "run", "-e", env, "-t", "upload"]
+    if port:
+        cmd.extend(["--upload-port", port])
     print_host(f"uploading firmware: {' '.join(cmd)}")
-    completed = subprocess.run(cmd, cwd=FIRMWARE_ROOT, check=False)
+    command_env = os.environ.copy()
+    command_env.setdefault("PLATFORMIO_CORE_DIR", str(REPO_ROOT / ".platformio"))
+    completed = subprocess.run(cmd, cwd=FIRMWARE_ROOT, env=command_env, check=False)
     if completed.returncode == 0:
         print_host(f"uploaded firmware env={env}")
     else:
@@ -250,7 +280,9 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
 def run_capture(args: argparse.Namespace) -> int:
     args = normalize_args(args)
     if args.upload_env:
-        upload_rc = upload_firmware(args.upload_env)
+        upload_port = args.port or find_serial_port()
+        print_host(f"upload port detected: {upload_port}")
+        upload_rc = upload_firmware(args.upload_env, upload_port)
         if upload_rc != 0:
             print(f"Upload failed (returncode {upload_rc}); aborting.", file=sys.stderr)
             return upload_rc
