@@ -224,6 +224,13 @@ def test_postprocesses_xml_without_guessing_measurements(tmp_path):
     } <= sensor_names
 
 
+_MESH_ASSETS_PRESENT = (ROOT / "sim" / "model" / "assets" / "motues_bracket.stl").exists()
+
+
+@pytest.mark.skipif(
+    not _MESH_ASSETS_PRESENT,
+    reason="STL mesh assets not present — run onshape-to-robot to generate them",
+)
 def test_generated_xml_compiles_with_mujoco(tmp_path):
     pytest.importorskip("mujoco")
     config_path = tmp_path / "config.yaml"

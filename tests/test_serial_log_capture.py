@@ -787,15 +787,26 @@ def _make_batch1_priors_dict(
         return {
             "suggested_sim": {
                 "frictionloss": {"value": friction, "unit": "N*m", "source": "coastdown"},
-                "damping": {"value": damping, "unit": "N*m*s/rad", "source": "coastdown_output_error"},  # noqa: E501
-                "armature": {"value": armature, "unit": "kg*m^2", "source": "powered_output_error_minus_cad_axial_inertia"},  # noqa: E501
+                "damping": {
+                    "value": damping,
+                    "unit": "N*m*s/rad",
+                    "source": "coastdown_output_error",
+                },
+                "armature": {
+                    "value": armature,
+                    "unit": "kg*m^2",
+                    "source": "powered_output_error_minus_cad_axial_inertia",
+                },
                 "torque_limit_nm": {"value": 0.25, "unit": "N*m", "source": "firmware_hard_cap"},
                 "command_sign": {"value": sign, "unit": "sign", "source": "operator_video_default"},
             },
             "diagnostics": {
                 "fitted_total_wheel_inertia_kg_m2": inertia,
                 "actuator_tracking": {
-                    "gain": 0.942, "bias_nm": 0.001, "rmse_nm": 0.04, "sample_count": 100
+                    "gain": 0.942,
+                    "bias_nm": 0.001,
+                    "rmse_nm": 0.04,
+                    "sample_count": 100,
                 },
                 "response_delay": {"median_s": 0.01, "min_s": 0.0, "max_s": 0.05},
             },
@@ -850,13 +861,15 @@ def test_estimate_loaded_radius_recovers_known_radius():
         alpha_rad_s2 = 3.0  # rad/s²
         a_imu = radius_m * alpha_rad_s2
         omega_rev_s += alpha_rad_s2 / batch2_post.RAD_PER_REV * 0.01
-        rows.append({
-            "t_us": t_us,
-            "phase": "straight_r1_average_pos_0p12",
-            "imu_linear_accel_x_m_s2": a_imu,
-            "left_vel_rev_s": omega_rev_s,
-            "right_vel_rev_s": omega_rev_s,
-        })
+        rows.append(
+            {
+                "t_us": t_us,
+                "phase": "straight_r1_average_pos_0p12",
+                "imu_linear_accel_x_m_s2": a_imu,
+                "left_vel_rev_s": omega_rev_s,
+                "right_vel_rev_s": omega_rev_s,
+            }
+        )
         t_us += 10_000  # 100 Hz
 
     result = batch2_post.estimate_loaded_radius(rows)
@@ -916,9 +929,14 @@ def test_decompose_losses_separates_motor_and_tire():
 
 def test_decompose_losses_returns_insufficient_without_radius():
     loss_fit = batch2_post.LossFit(
-        sample_count=10, linear_damping_s=0.1, friction_accel_m_s2=0.2,
-        per_wheel_torque_nm=None, rmse_m_s=None, confidence="provisional",
-        bound_active={}, notes=[],
+        sample_count=10,
+        linear_damping_s=0.1,
+        friction_accel_m_s2=0.2,
+        per_wheel_torque_nm=None,
+        rmse_m_s=None,
+        confidence="provisional",
+        bound_active={},
+        notes=[],
     )
     result = batch2_post.decompose_losses(loss_fit, {}, {}, None, 8.0, None, None)
     assert result["confidence"] == "insufficient"
@@ -927,9 +945,14 @@ def test_decompose_losses_returns_insufficient_without_radius():
 
 def test_decompose_losses_returns_insufficient_without_batch1():
     loss_fit = batch2_post.LossFit(
-        sample_count=100, linear_damping_s=0.1, friction_accel_m_s2=0.2,
-        per_wheel_torque_nm=0.05, rmse_m_s=0.01, confidence="measured",
-        bound_active={}, notes=[],
+        sample_count=100,
+        linear_damping_s=0.1,
+        friction_accel_m_s2=0.2,
+        per_wheel_torque_nm=0.05,
+        rmse_m_s=0.01,
+        confidence="measured",
+        bound_active={},
+        notes=[],
     )
     result = batch2_post.decompose_losses(loss_fit, {}, {}, 0.065, 8.0, None, None)
     assert result["confidence"] == "insufficient"
@@ -978,8 +1001,7 @@ def test_mujoco_params_assembles_from_priors_and_batch2(tmp_path: Path):
     assert math.isclose(result["actuators"]["left"]["frictionloss_nm"], 0.115)
     assert result["geometry"]["loaded_wheel_radius_m"]["value"] == 0.065
     assert (
-        result["geometry"]["loaded_wheel_radius_m"]["source"]
-        == "batch2_imu_wheel_kinematic_ratio"
+        result["geometry"]["loaded_wheel_radius_m"]["source"] == "batch2_imu_wheel_kinematic_ratio"
     )
     assert result["geometry"]["effective_track_width_m"]["value"] == 0.32
     assert result["contact"]["rolling_resistance_coeff"] == 0.015
@@ -1018,8 +1040,12 @@ def test_lqr_readiness_has_batch2_schema_false_for_wrong_schema(tmp_path: Path):
     derived = batch2_post.analyze_run(
         run_dir,
         physical_overrides={
-            "mass_kg": None, "loaded_wheel_radius_m": None, "wheel_track_width_m": None,
-            "com_height_m": None, "com_fore_aft_m": None, "pitch_inertia_kg_m2": None,
+            "mass_kg": None,
+            "loaded_wheel_radius_m": None,
+            "wheel_track_width_m": None,
+            "com_height_m": None,
+            "com_fore_aft_m": None,
+            "pitch_inertia_kg_m2": None,
         },
     )
 
@@ -1048,8 +1074,12 @@ def test_lqr_readiness_has_batch2_schema_true_for_correct_schema(tmp_path: Path)
     derived = batch2_post.analyze_run(
         run_dir,
         physical_overrides={
-            "mass_kg": None, "loaded_wheel_radius_m": None, "wheel_track_width_m": None,
-            "com_height_m": None, "com_fore_aft_m": None, "pitch_inertia_kg_m2": None,
+            "mass_kg": None,
+            "loaded_wheel_radius_m": None,
+            "wheel_track_width_m": None,
+            "com_height_m": None,
+            "com_fore_aft_m": None,
+            "pitch_inertia_kg_m2": None,
         },
     )
 
@@ -1070,8 +1100,12 @@ def test_analyze_run_uses_batch1_command_signs(tmp_path: Path):
         run_dir,
         batch1_derived=priors_path,
         physical_overrides={
-            "mass_kg": None, "loaded_wheel_radius_m": None, "wheel_track_width_m": None,
-            "com_height_m": None, "com_fore_aft_m": None, "pitch_inertia_kg_m2": None,
+            "mass_kg": None,
+            "loaded_wheel_radius_m": None,
+            "wheel_track_width_m": None,
+            "com_height_m": None,
+            "com_fore_aft_m": None,
+            "pitch_inertia_kg_m2": None,
         },
     )
 

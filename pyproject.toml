@@ -51,6 +51,10 @@ explicit = true
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+exclude = [
+    ".platformio",
+    "firmware/finn-mcu/.cache",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]

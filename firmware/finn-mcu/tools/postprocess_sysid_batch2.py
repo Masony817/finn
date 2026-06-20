@@ -679,7 +679,8 @@ def estimate_loaded_radius(rows: list[dict[str, Any]]) -> dict[str, Any]:
         t = _series(group, "t_us") / 1_000_000.0
         a_imu = _series(group, "imu_linear_accel_x_m_s2")
         omega_avg = (
-            0.5 * (_series(group, "left_vel_rev_s") + _series(group, "right_vel_rev_s"))
+            0.5
+            * (_series(group, "left_vel_rev_s") + _series(group, "right_vel_rev_s"))
             * RAD_PER_REV
         )
         finite = np.isfinite(t) & np.isfinite(a_imu) & np.isfinite(omega_avg)
@@ -891,11 +892,13 @@ def mujoco_params(
             "notes": ["solref_and_solimp_to_be_identified_in_batch3"],
         },
         "readiness": {
-            "batch3_can_proceed": all([
-                radius_m is not None,
-                yaw.get("effective_track_width_m") is not None,
-                b1.get("left", {}).get("frictionloss_nm") is not None,
-            ]),
+            "batch3_can_proceed": all(
+                [
+                    radius_m is not None,
+                    yaw.get("effective_track_width_m") is not None,
+                    b1.get("left", {}).get("frictionloss_nm") is not None,
+                ]
+            ),
             "open_params_for_batch3": open_params,
         },
     }
@@ -1188,8 +1191,7 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
             + f" | {loss_decomp.get('confidence', 'insufficient')} |",
             "| loaded wheel radius m | "
             f"{radius_est.get('radius_m')} | {radius_est.get('confidence', 'insufficient')} |",
-            "| effective track width m | "
-            f"{yaw['effective_track_width_m']} | {yaw['confidence']} |",
+            f"| effective track width m | {yaw['effective_track_width_m']} | {yaw['confidence']} |",
             f"| straight mu lower bound | {traction['straight_mu_lower_bound']} | lower_bound |",
         ]
     )

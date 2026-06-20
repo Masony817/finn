@@ -315,9 +315,7 @@ def segment_end_reasons(events: list[dict[str, Any]]) -> dict[str, str]:
     return {
         str(event["phase"]): str(event["reason"])
         for event in events
-        if event.get("event") == "segment_end"
-        and event.get("phase")
-        and event.get("reason")
+        if event.get("event") == "segment_end" and event.get("phase") and event.get("reason")
     }
 
 
@@ -602,9 +600,10 @@ def _simulate_coast_segment(
     for index in range(1, len(t)):
         dt = max(float(t[index] - t[index - 1]), 0.0)
         sign = _dry_friction_sign(float(predicted[index - 1]))
-        predicted[index] = predicted[index - 1] + (
-            -damping_per_j * predicted[index - 1] - friction_per_j * sign
-        ) * dt
+        predicted[index] = (
+            predicted[index - 1]
+            + (-damping_per_j * predicted[index - 1] - friction_per_j * sign) * dt
+        )
     return predicted
 
 
@@ -621,11 +620,15 @@ def _simulate_powered_segment(
     for index in range(1, len(t)):
         dt = max(float(t[index] - t[index - 1]), 0.0)
         sign = _dry_friction_sign(float(predicted[index - 1]), float(tau[index - 1]))
-        predicted[index] = predicted[index - 1] + (
-            float(tau[index - 1]) / inertia
-            - damping_per_j * predicted[index - 1]
-            - friction_per_j * sign
-        ) * dt
+        predicted[index] = (
+            predicted[index - 1]
+            + (
+                float(tau[index - 1]) / inertia
+                - damping_per_j * predicted[index - 1]
+                - friction_per_j * sign
+            )
+            * dt
+        )
     return predicted
 
 
@@ -697,9 +700,7 @@ def fit_powered_inertia_output_error(
     damping_per_j = damping_per_j or 0.0
     friction_per_j = friction_per_j or 0.0
     initial = (
-        initial_inertia_kg_m2
-        if initial_inertia_kg_m2 and initial_inertia_kg_m2 > 0
-        else 0.005
+        initial_inertia_kg_m2 if initial_inertia_kg_m2 and initial_inertia_kg_m2 > 0 else 0.005
     )
     x0 = np.array([initial])
 
@@ -1111,8 +1112,7 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
         sim = item["suggested_sim"]
         lines.append(
             (
-                "| {side} | {sign} | {limit} | {validated} | {friction} | "
-                "{damping} | {armature} |"
+                "| {side} | {sign} | {limit} | {validated} | {friction} | {damping} | {armature} |"
             ).format(
                 side=side,
                 sign=sim["command_sign"]["value"],

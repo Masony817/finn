@@ -164,7 +164,8 @@ def upload_firmware(env: str, port: str | None = None) -> int:
     pio = find_platformio_executable()
     if not pio:
         print(
-            "PlatformIO executable not found. Install PlatformIO or add `pio`/`platformio` to PATH.",
+            "PlatformIO executable not found. "
+            "Install PlatformIO or add `pio`/`platformio` to PATH.",
             file=sys.stderr,
         )
         return 127

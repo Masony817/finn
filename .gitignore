@@ -118,6 +118,8 @@ isaac_sim_logs/
 .pio/
 .pioenvs/
 .piolibdeps/
+.platformio/
+firmware/finn-mcu/.cache/
 build/
 *.hex
 *.elf
