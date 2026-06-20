@@ -594,6 +594,37 @@ def test_batch2_postprocess_reads_v1_schema_and_segment_end(tmp_path: Path):
     assert parsed[1]["elapsed_ms"] == 600
 
 
+def test_batch2_physical_inputs_read_repo_measurements():
+    measurements = batch2_post.load_measurements(ROOT / "sim" / "config" / "finn_measurements.yaml")
+    phys = batch2_post.physical_inputs(measurements)
+
+    # Assert presence and plausible range rather than exact values so this test
+    # survives measurement refinements without needing a manual update.
+    assert phys["robot_mass_kg"] is not None and 1.0 < phys["robot_mass_kg"] < 20.0
+    assert phys["loaded_wheel_radius_m"] is not None and 0.03 < phys["loaded_wheel_radius_m"] < 0.2
+    assert phys["wheel_track_width_m"] is not None and 0.1 < phys["wheel_track_width_m"] < 1.0
+    assert phys["com_height_m"] is not None and 0.0 < phys["com_height_m"] < 2.0
+    assert phys["com_fore_aft_m"] is not None
+
+
+def test_batch1_analyze_run_records_measurements(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "telemetry.csv").write_text("schema,batch1_v2\n")
+
+    derived = batch1_post.analyze_run(
+        run_dir,
+        hard_torque_limit_nm=0.25,
+        command_signs={"left": -1, "right": 1},
+        measurements_path=ROOT / "sim" / "config" / "finn_measurements.yaml",
+    )
+
+    physical = derived["input_models"]["physical"]
+    assert physical["robot_mass_kg"] is not None and physical["robot_mass_kg"] > 0
+    assert physical["loaded_wheel_radius_m"] is not None and physical["loaded_wheel_radius_m"] > 0
+    assert physical["left_gear_ratio"] is not None and physical["left_gear_ratio"] > 0
+
+
 def test_batch2_synthetic_straight_pulse_recovers_delay_and_torque_gain():
     rows = []
     commands = [0.0, 0.06, 0.12, -0.06, -0.12, 0.18]
@@ -749,6 +780,25 @@ def test_capture_sysid_batch2_defaults(monkeypatch):
     assert args.auto_command == ["ARM FINN", "RUN BATCH2"]
     assert "postprocess_sysid_batch2.py" in args.postprocess
     assert "--run-dir {run_dir}" in args.postprocess
+    assert "--measurements" in args.postprocess
+    assert "finn_measurements.yaml" in args.postprocess
+
+
+def test_capture_sysid_batch1_defaults_include_measurements(monkeypatch):
+    module_path = TOOLS / "capture-sysid-batch1.py"
+    spec = importlib.util.spec_from_file_location("capture_sysid_batch1", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(sys, "argv", ["capture-sysid-batch1.py", "--auto-run"])
+    args = module.parse_args()
+
+    assert args.run_name == "batch_1"
+    assert args.upload_env == "sysid_batch1_wheels_offground"
+    assert args.auto_command == ["ARM FINN", "RUN BATCH1"]
+    assert "--measurements" in args.postprocess
+    assert "finn_measurements.yaml" in args.postprocess
 
 
 def test_arm_command_override_replaces_default():

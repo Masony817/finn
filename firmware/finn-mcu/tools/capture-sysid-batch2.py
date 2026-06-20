@@ -18,8 +18,14 @@ BATCH2_ARM_COMMANDS = ("ARM FINN",)
 BATCH2_RUN_COMMANDS = ("RUN BATCH2",)
 BATCH2_UPLOAD_ENV = "sysid_batch2_loaded_ground"
 POSTPROCESS_SCRIPT = Path(__file__).resolve().parent / "postprocess_sysid_batch2.py"
+MEASUREMENTS_CONFIG = (
+    Path(__file__).resolve().parents[3] / "sim" / "config" / "finn_measurements.yaml"
+)
 # {run_dir} is substituted by serial_log_capture after the run dir is finalized.
-BATCH2_POSTPROCESS = f"{sys.executable} {POSTPROCESS_SCRIPT} --run-dir {{run_dir}}"
+BATCH2_POSTPROCESS = (
+    f"{sys.executable} {POSTPROCESS_SCRIPT} --run-dir {{run_dir}} "
+    f"--measurements {MEASUREMENTS_CONFIG}"
+)
 
 
 def parse_args() -> argparse.Namespace:

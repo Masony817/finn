@@ -3,30 +3,80 @@
 # estimated, so the generated sim cannot quietly depend on placeholders.
 schema_version: 1
 
+robot:
+  mass_kg:
+    value: 8.44
+    unit: kg
+    source: measured
+    notes: Complete robot with battery and gantry support print.
+  mass_no_battery_kg:
+    value: 7.7
+    unit: kg
+    source: measured
+    notes: Complete robot without battery, with gantry support print.
+  rough_base_assembly_mass_kg:
+    value: 5.86
+    unit: kg
+    source: measured
+    notes: Rough base assembly, no mast or battery.
+  base_extrusion_mass_kg:
+    value: 0.85
+    unit: kg
+    source: measured
+  mast_extrusion_mass_kg:
+    value: 1.7
+    unit: kg
+    source: measured
+  wheel_track_width_m:
+    value: 0.517
+    unit: m
+    source: cad
+    notes: Distance between left and right wheel-center body origins in sim/model/finn_robot.xml.
+  com_fore_aft_m:
+    value: -0.00623145
+    unit: m
+    source: cad
+    notes: CAD-generated COM x in Finn's exported frame; tune in practice.
+  com_lateral_m:
+    value: 0.24903644
+    unit: m
+    source: cad
+    notes: CAD-generated COM y in Finn's exported frame.
+  com_height_m:
+    value: 0.192549
+    unit: m
+    source: cad
+    notes: CAD-generated COM z (height) in Finn's exported frame; tune in practice.
+  pitch_inertia_kg_m2:
+    value:
+    unit: kg*m^2
+    source: todo
+    notes: Add CAD or identified pitch inertia before relying on absolute pitch dynamics.
+
 wheels:
   left:
     radius_m:
-      value:
+      value: 0.081
       unit: m
-      source: todo
-      notes: Measure loaded tire radius, not nominal CAD radius.
+      source: measured
+      notes: Loaded physical diameter was approximately 162 mm.
     width_m:
       value:
       unit: m
       source: todo
     mass_kg:
-      value:
+      value: 2.1
       unit: kg
-      source: todo
-      notes: Optional; leave todo/null to preserve exported CAD inertial.
+      source: measured
+      notes: Wheel assembly mass.
     torque_limit_nm:
       value:
       unit: N*m
       source: todo
     gear_ratio:
-      value:
+      value: 1.0
       unit: ratio
-      source: todo
+      source: measured
       notes: 1 for a direct-drive hoverboard motor; FOC torque is commanded at the output.
     command_sign:
       value:
@@ -48,27 +98,27 @@ wheels:
 
   right:
     radius_m:
-      value:
+      value: 0.081
       unit: m
-      source: todo
-      notes: Measure loaded tire radius, not nominal CAD radius.
+      source: measured
+      notes: Loaded physical diameter was approximately 162 mm.
     width_m:
       value:
       unit: m
       source: todo
     mass_kg:
-      value:
+      value: 2.1
       unit: kg
-      source: todo
-      notes: Optional; leave todo/null to preserve exported CAD inertial.
+      source: measured
+      notes: Wheel assembly mass.
     torque_limit_nm:
       value:
       unit: N*m
       source: todo
     gear_ratio:
-      value:
+      value: 1.0
       unit: ratio
-      source: todo
+      source: measured
       notes: 1 for a direct-drive hoverboard motor; FOC torque is commanded at the output.
     command_sign:
       value:

@@ -24,6 +24,7 @@ MIN_DYNAMIC_SPEED_RAD_S = 0.05
 RAD_PER_REV = 2.0 * math.pi
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROBOT_XML = REPO_ROOT / "sim" / "model" / "finn_robot.xml"
+DEFAULT_MEASUREMENTS = REPO_ROOT / "sim" / "config" / "finn_measurements.yaml"
 
 NUMERIC_FIELDS = {
     "t_us",
@@ -212,6 +213,54 @@ def _parse_vec(value: str | None, expected: int) -> list[float]:
         return []
     parts = [float(part) for part in value.split()]
     return parts if len(parts) == expected else []
+
+
+def _measurement_value(data: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    node: Any = data
+    for part in path:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    if isinstance(node, dict):
+        node = node.get("value")
+    value = _to_float(node)
+    return float(value) if math.isfinite(value) else None
+
+
+def load_measurements(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    loaded = yaml.safe_load(path.read_text()) or {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def physical_inputs(measurements: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "robot_mass_kg": _measurement_value(measurements, ("robot", "mass_kg")),
+        "robot_mass_no_battery_kg": _measurement_value(
+            measurements, ("robot", "mass_no_battery_kg")
+        ),
+        "loaded_wheel_radius_m": _mean_present(
+            [
+                _measurement_value(measurements, ("wheels", "left", "radius_m")),
+                _measurement_value(measurements, ("wheels", "right", "radius_m")),
+            ]
+        ),
+        "wheel_track_width_m": _measurement_value(measurements, ("robot", "wheel_track_width_m")),
+        "left_wheel_mass_kg": _measurement_value(measurements, ("wheels", "left", "mass_kg")),
+        "right_wheel_mass_kg": _measurement_value(measurements, ("wheels", "right", "mass_kg")),
+        "left_gear_ratio": _measurement_value(measurements, ("wheels", "left", "gear_ratio")),
+        "right_gear_ratio": _measurement_value(measurements, ("wheels", "right", "gear_ratio")),
+        "com_height_m": _measurement_value(measurements, ("robot", "com_height_m"))
+        or _measurement_value(measurements, ("robot", "com", "z_m")),
+        "com_fore_aft_m": _measurement_value(measurements, ("robot", "com_fore_aft_m"))
+        or _measurement_value(measurements, ("robot", "com", "x_m")),
+    }
+
+
+def _mean_present(values: list[float | None]) -> float | None:
+    present = [value for value in values if value is not None and value > 0.0]
+    return float(np.mean(present)) if present else None
 
 
 def _quat_to_matrix(quat: list[float]) -> np.ndarray:
@@ -811,6 +860,7 @@ def analyze_run(
     hard_torque_limit_nm: float,
     command_signs: dict[str, int],
     robot_xml: Path | None = DEFAULT_ROBOT_XML,
+    measurements_path: Path = DEFAULT_MEASUREMENTS,
     cad_axial_inertia_overrides: dict[str, float | None] | None = None,
     kt_metadata: dict[str, float | None] | None = None,
 ) -> dict[str, Any]:
@@ -825,6 +875,8 @@ def analyze_run(
         "left": summarize_breakaway_diagnostics(stats, "left"),
         "right": summarize_breakaway_diagnostics(stats, "right"),
     }
+    measurements = load_measurements(measurements_path)
+    phys = physical_inputs(measurements)
     cad_axial_inertias = cad_axial_inertias_from_robot_xml(robot_xml) if robot_xml else {}
     cad_axial_inertia_overrides = cad_axial_inertia_overrides or {}
     kt_metadata = kt_metadata or {}
@@ -866,6 +918,8 @@ def analyze_run(
         },
         "input_models": {
             "robot_xml": str(robot_xml) if robot_xml else None,
+            "measurements": str(measurements_path),
+            "physical": phys,
         },
         "wheels": {},
         "warnings": warnings,
@@ -1123,6 +1177,20 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
                 armature=sim["armature"]["value"],
             )
         )
+    physical = derived.get("input_models", {}).get("physical", {})
+    lines.extend(
+        [
+            "",
+            "## Physical inputs",
+            "",
+            f"- measurements: `{derived.get('input_models', {}).get('measurements')}`",
+            f"- robot_mass_kg: `{physical.get('robot_mass_kg')}`",
+            f"- loaded_wheel_radius_m: `{physical.get('loaded_wheel_radius_m')}`",
+            f"- wheel_track_width_m: `{physical.get('wheel_track_width_m')}`",
+            f"- com_height_m: `{physical.get('com_height_m')}`",
+            f"- com_fore_aft_m: `{physical.get('com_fore_aft_m')}`",
+        ]
+    )
     lines.extend(["", "## Warnings", ""])
     warnings = derived.get("warnings") or []
     if warnings:
@@ -1160,6 +1228,7 @@ def main() -> int:
     parser.add_argument("--left-command-sign", type=int, choices=(-1, 1), default=-1)
     parser.add_argument("--right-command-sign", type=int, choices=(-1, 1), default=1)
     parser.add_argument("--robot-xml", type=Path, default=DEFAULT_ROBOT_XML)
+    parser.add_argument("--measurements", type=Path, default=DEFAULT_MEASUREMENTS)
     parser.add_argument("--left-cad-axial-inertia-kg-m2", type=float)
     parser.add_argument("--right-cad-axial-inertia-kg-m2", type=float)
     parser.add_argument("--left-kt-nm-per-amp", type=float)
@@ -1175,6 +1244,7 @@ def main() -> int:
         hard_torque_limit_nm=args.hard_torque_limit_nm,
         command_signs={"left": args.left_command_sign, "right": args.right_command_sign},
         robot_xml=args.robot_xml,
+        measurements_path=args.measurements,
         cad_axial_inertia_overrides={
             "left": args.left_cad_axial_inertia_kg_m2,
             "right": args.right_cad_axial_inertia_kg_m2,

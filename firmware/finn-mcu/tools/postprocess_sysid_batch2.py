@@ -228,14 +228,23 @@ def physical_inputs(
     right_radius = _measurement_value(measurements, ("wheels", "right", "radius_m"))
     radii = [value for value in (left_radius, right_radius) if value and value > 0]
     radius = loaded_wheel_radius_m or (float(np.mean(radii)) if radii else None)
+    com_height = (
+        com_height_m
+        or _measurement_value(measurements, ("robot", "com_height_m"))
+        or _measurement_value(measurements, ("robot", "com", "z_m"))
+    )
+    com_fore_aft = (
+        com_fore_aft_m
+        or _measurement_value(measurements, ("robot", "com_fore_aft_m"))
+        or _measurement_value(measurements, ("robot", "com", "x_m"))
+    )
     return {
         "robot_mass_kg": mass_kg or _measurement_value(measurements, ("robot", "mass_kg")),
         "loaded_wheel_radius_m": radius,
         "wheel_track_width_m": wheel_track_width_m
         or _measurement_value(measurements, ("robot", "wheel_track_width_m")),
-        "com_height_m": com_height_m or _measurement_value(measurements, ("robot", "com_height_m")),
-        "com_fore_aft_m": com_fore_aft_m
-        or _measurement_value(measurements, ("robot", "com_fore_aft_m")),
+        "com_height_m": com_height,
+        "com_fore_aft_m": com_fore_aft,
         "pitch_inertia_kg_m2": pitch_inertia_kg_m2
         or _measurement_value(measurements, ("robot", "pitch_inertia_kg_m2")),
     }

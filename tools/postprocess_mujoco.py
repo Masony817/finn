@@ -925,6 +925,23 @@ def init_measurements_template(robot_path: Path, output_path: Path, *, force: bo
 
     template: dict[str, Any] = {
         "schema_version": 1,
+        "robot": {
+            "mass_kg": provenance(None, "kg", "todo", "Complete robot mass for loaded sysid."),
+            "mass_no_battery_kg": provenance(None, "kg", "todo"),
+            "rough_base_assembly_mass_kg": provenance(None, "kg", "todo"),
+            "base_extrusion_mass_kg": provenance(None, "kg", "todo"),
+            "mast_extrusion_mass_kg": provenance(None, "kg", "todo"),
+            "wheel_track_width_m": provenance(None, "m", "todo"),
+            "com": {
+                "x_m": provenance(None, "m", "todo"),
+                "y_m": provenance(None, "m", "todo"),
+                "z_m": provenance(None, "m", "todo"),
+            },
+            "com_fore_aft_m": provenance(None, "m", "todo"),
+            "com_lateral_m": provenance(None, "m", "todo"),
+            "com_height_m": provenance(None, "m", "todo"),
+            "pitch_inertia_kg_m2": provenance(None, "kg*m^2", "todo"),
+        },
         "wheels": {
             key: {
                 "radius_m": provenance(None, "m", "todo"),
