@@ -3,6 +3,18 @@
 # estimated, so the generated sim cannot quietly depend on placeholders.
 schema_version: 1
 
+gantry:
+  mass_kg:
+    value: 9.620
+    unit: kg
+    source: measured
+    notes: >
+      Weighed with luggage scale, ±50 g uncertainty. Gantry is present during batch 2
+      (loaded ground-contact) runs with casters unlocked. Mass ratio gantry/robot ≈ 1.14,
+      so it meaningfully biases rolling resistance and yaw response measurements.
+      Postprocessors should use robot.mass_kg + gantry.mass_kg as m_system for coastdown
+      force balance, and flag track_width from batch 2 for manual verification against CAD.
+
 robot:
   mass_kg:
     value: 8.44
@@ -48,10 +60,26 @@ robot:
     source: cad
     notes: CAD-generated COM z (height) in Finn's exported frame; tune in practice.
   pitch_inertia_kg_m2:
-    value:
+    value: 0.577150
     unit: kg*m^2
-    source: todo
-    notes: Add CAD or identified pitch inertia before relying on absolute pitch dynamics.
+    source: cad
+    notes: >
+      Lyy from OnShape full-assembly inertia tensor (Y = lateral/wheel-axle axis = pitch axis).
+      Whole robot including wheels and battery. See cad_inertia_tensor_whole_robot for
+      full tensor; subtract wheel inertias if building per-body MuJoCo model.
+  cad_inertia_tensor_whole_robot:
+    source: cad
+    notes: >
+      OnShape full-assembly mass moments of inertia in CAD frame: X=fore-aft, Y=lateral
+      (wheel axis), Z=vertical. Whole robot including wheels and battery (mass 8.44 kg).
+      Units kg*m^2, converted from kg*mm^2 reported by CAD (divided by 1e6).
+      MuJoCo fullinertia order is Ixx Iyy Izz Ixy Ixz Iyz.
+    Ixx_kg_m2: 0.945588   # roll (fore-aft axis)
+    Iyy_kg_m2: 0.577150   # pitch (wheel axle / lateral axis)
+    Izz_kg_m2: 0.385827   # yaw (vertical axis)
+    Ixy_kg_m2: 0.000112   # cross term (nearly zero, good)
+    Ixz_kg_m2: 0.015144   # cross term (fore-aft/vertical coupling)
+    Iyz_kg_m2: -0.000487  # cross term (nearly zero, good)
 
 wheels:
   left:

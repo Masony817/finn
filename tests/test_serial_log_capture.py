@@ -643,7 +643,7 @@ def test_batch2_synthetic_straight_pulse_recovers_delay_and_torque_gain():
                 "right_torque_nm": measured,
                 "left_vel_rev_s": 0.0,
                 "right_vel_rev_s": 0.0,
-                "imu_linear_accel_x_m_s2": measured,
+                "imu_linear_accel_z_m_s2": measured,
                 "yaw_rate_rad_s": 0.0,
             }
         )
@@ -915,7 +915,7 @@ def test_estimate_loaded_radius_recovers_known_radius():
             {
                 "t_us": t_us,
                 "phase": "straight_r1_average_pos_0p12",
-                "imu_linear_accel_x_m_s2": a_imu,
+                "imu_linear_accel_z_m_s2": a_imu,
                 "left_vel_rev_s": omega_rev_s,
                 "right_vel_rev_s": omega_rev_s,
             }
@@ -925,6 +925,32 @@ def test_estimate_loaded_radius_recovers_known_radius():
     result = batch2_post.estimate_loaded_radius(rows)
 
     assert result["sample_count"] > 0
+    assert result["radius_m"] is not None
+    assert math.isclose(result["radius_m"], radius_m, rel_tol=0.15)
+
+
+def test_estimate_loaded_radius_tolerates_forward_accel_sign():
+    radius_m = 0.065
+    rows = []
+    t_us = 0
+    omega_rev_s = 0.0
+    for _ in range(80):
+        alpha_rad_s2 = 3.0
+        a_imu = -radius_m * alpha_rad_s2
+        omega_rev_s += alpha_rad_s2 / batch2_post.RAD_PER_REV * 0.01
+        rows.append(
+            {
+                "t_us": t_us,
+                "phase": "straight_r1_average_pos_0p12",
+                "imu_linear_accel_z_m_s2": a_imu,
+                "left_vel_rev_s": omega_rev_s,
+                "right_vel_rev_s": omega_rev_s,
+            }
+        )
+        t_us += 10_000
+
+    result = batch2_post.estimate_loaded_radius(rows)
+
     assert result["radius_m"] is not None
     assert math.isclose(result["radius_m"], radius_m, rel_tol=0.15)
 

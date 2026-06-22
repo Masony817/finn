@@ -18,6 +18,7 @@ import yaml
 RAD_PER_REV = 2.0 * math.pi
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MEASUREMENTS = REPO_ROOT / "sim" / "config" / "finn_measurements.yaml"
+ROBOT_FORWARD_ACCEL_FIELD = "imu_linear_accel_z_m_s2"
 
 NUMERIC_FIELDS = {
     "t_us",
@@ -161,6 +162,14 @@ def _finite_or_none(value: float | None, ndigits: int = 8) -> float | None:
     return round(float(value), ndigits)
 
 
+def _safe_int(value: object) -> int:
+    try:
+        f = float(value)  # type: ignore[arg-type]
+        return int(f) if math.isfinite(f) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _range(values: list[float], ndigits: int = 6) -> list[float | None]:
     finite = [float(value) for value in values if math.isfinite(value)]
     if not finite:
@@ -218,6 +227,7 @@ def physical_inputs(
     measurements: dict[str, Any],
     *,
     mass_kg: float | None = None,
+    gantry_mass_kg: float | None = None,
     loaded_wheel_radius_m: float | None = None,
     wheel_track_width_m: float | None = None,
     com_height_m: float | None = None,
@@ -238,8 +248,11 @@ def physical_inputs(
         or _measurement_value(measurements, ("robot", "com_fore_aft_m"))
         or _measurement_value(measurements, ("robot", "com", "x_m"))
     )
+    robot_mass = mass_kg or _measurement_value(measurements, ("robot", "mass_kg"))
+    gantry_mass = gantry_mass_kg or _measurement_value(measurements, ("gantry", "mass_kg"))
     return {
-        "robot_mass_kg": mass_kg or _measurement_value(measurements, ("robot", "mass_kg")),
+        "robot_mass_kg": robot_mass,
+        "gantry_mass_kg": gantry_mass,
         "loaded_wheel_radius_m": radius,
         "wheel_track_width_m": wheel_track_width_m
         or _measurement_value(measurements, ("robot", "wheel_track_width_m")),
@@ -359,8 +372,8 @@ def delay_estimates(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "average": cross_correlation_delay_s(avg_cmd_rows, "avg_cmd_nm", "avg_wheel_vel_rev_s"),
         },
         "command_to_imu": {
-            "linear_accel_x": cross_correlation_delay_s(
-                avg_cmd_rows, "avg_cmd_nm", "imu_linear_accel_x_m_s2"
+            "linear_accel_forward": cross_correlation_delay_s(
+                avg_cmd_rows, "avg_cmd_nm", ROBOT_FORWARD_ACCEL_FIELD
             ),
             "yaw_rate": cross_correlation_delay_s(diff_cmd_rows, "diff_cmd_nm", "yaw_rate_rad_s"),
         },
@@ -453,9 +466,9 @@ def tire_traction_lower_bounds(
         "source": "onboard_imu_and_wheel_odometry_lower_bound",
     }
     if rows:
-        accel_x = np.abs(_finite_series(rows, "imu_linear_accel_x_m_s2"))
-        if len(accel_x):
-            max_accel = float(np.percentile(accel_x, 95))
+        forward_accel = np.abs(_finite_series(rows, ROBOT_FORWARD_ACCEL_FIELD))
+        if len(forward_accel):
+            max_accel = float(np.percentile(forward_accel, 95))
             result["straight_accel_m_s2"] = _finite_or_none(max_accel, 6)
             result["straight_mu_lower_bound"] = _finite_or_none(max_accel / 9.80665, 6)
     if radius_m and track_width_m and track_width_m > 0:
@@ -686,7 +699,7 @@ def estimate_loaded_radius(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if "settle" in phase:
             continue
         t = _series(group, "t_us") / 1_000_000.0
-        a_imu = _series(group, "imu_linear_accel_x_m_s2")
+        a_imu = _series(group, ROBOT_FORWARD_ACCEL_FIELD)
         omega_avg = (
             0.5
             * (_series(group, "left_vel_rev_s") + _series(group, "right_vel_rev_s"))
@@ -700,7 +713,7 @@ def estimate_loaded_radius(rows: list[dict[str, Any]]) -> dict[str, Any]:
         mask = np.abs(alpha) > 0.5  # rad/s² — ignore near-constant-velocity windows
         if int(np.sum(mask)) < 3:
             continue
-        r_samples = a_f[mask] / alpha[mask]
+        r_samples = np.abs(a_f[mask] / alpha[mask])
         valid = r_samples[(r_samples > 0.03) & (r_samples < 0.12)]
         ratios.extend(valid.tolist())
 
@@ -962,13 +975,26 @@ def analyze_run(
         else:
             command_signs = {"left": -1, "right": 1}
 
+    robot_mass_kg = phys.get("robot_mass_kg")
+    gantry_mass_kg = phys.get("gantry_mass_kg")
+    if robot_mass_kg and gantry_mass_kg and gantry_mass_kg > 0:
+        system_mass_kg = robot_mass_kg + gantry_mass_kg
+    else:
+        system_mass_kg = robot_mass_kg
+
     warnings: list[str] = []
-    warnings.append("gyro_axis_mapping_unconfirmed_assumes_y_pitch_z_yaw")
+    warnings.append("imu_axis_mapping_uses_sensor_x_pitch_y_yaw_z_forward_verify_signs")
+    if gantry_mass_kg and gantry_mass_kg > 0:
+        ratio = gantry_mass_kg / robot_mass_kg if robot_mass_kg else 0.0
+        warnings.append(
+            f"gantry_present_mass_{gantry_mass_kg:.3f}_kg_ratio_{ratio:.2f}_"
+            "coastdown_uses_system_mass_rolling_resistance_includes_caster_friction"
+        )
     if schema != "batch2_v1":
         warnings.append(f"unexpected_or_missing_schema_{schema}")
     if not rows:
         warnings.append("no_telemetry_rows")
-    missing_physical = [key for key, value in phys.items() if value is None]
+    missing_physical = [key for key, value in phys.items() if value is None and key != "gantry_mass_kg"]
     warnings.extend(f"missing_physical_input_{key}" for key in missing_physical)
 
     duration = ((rows[-1]["t_us"] - rows[0]["t_us"]) / 1_000_000.0) if len(rows) >= 2 else 0.0
@@ -989,7 +1015,7 @@ def analyze_run(
             warnings.append(f"safety_limit_{event.get('phase')}")
 
     loss_fit = fit_loaded_coastdown_loss(
-        rows, phys.get("loaded_wheel_radius_m"), phys.get("robot_mass_kg")
+        rows, phys.get("loaded_wheel_radius_m"), system_mass_kg
     )
     yaw = yaw_response(rows, phys.get("loaded_wheel_radius_m"), phys.get("wheel_track_width_m"))
     noise = noise_stats(rows)
@@ -1006,7 +1032,7 @@ def analyze_run(
         b1_priors.get("left", {}),
         b1_priors.get("right", {}),
         radius_for_decomp,
-        phys.get("robot_mass_kg"),
+        system_mass_kg,
         b1_priors.get("left", {}).get("total_wheel_inertia_kg_m2"),
         b1_priors.get("right", {}).get("total_wheel_inertia_kg_m2"),
     )
@@ -1115,9 +1141,9 @@ def analyze_run(
                 "loaded_loss_rmse_m_s": _finite_or_none(loss_fit.rmse_m_s, 8),
             },
             "saturation_flags": {
-                "pitch_limit_rows": int(sum(int(row.get("pitch_limit", 0) or 0) for row in rows)),
-                "speed_limit_rows": int(sum(int(row.get("speed_limit", 0) or 0) for row in rows)),
-                "travel_limit_rows": int(sum(int(row.get("travel_limit", 0) or 0) for row in rows)),
+                "pitch_limit_rows": int(sum(_safe_int(row.get("pitch_limit", 0)) for row in rows)),
+                "speed_limit_rows": int(sum(_safe_int(row.get("speed_limit", 0)) for row in rows)),
+                "travel_limit_rows": int(sum(_safe_int(row.get("travel_limit", 0)) for row in rows)),
                 "max_command_near_hard_cap": validated_loaded_torque >= 0.249,
             },
             "actuator_cross_check": {
@@ -1135,7 +1161,7 @@ def analyze_run(
             "contact_solimp",
             "contact_compliance",
             "full_body_inertia_from_onboard_batch2_only",
-            "robot_frame_pitch_rate_yaw_rate_until_imu_axis_mapping_confirmed",
+            "signed_robot_frame_pitch_yaw_forward_accel_until_imu_axis_signs_confirmed",
         ],
     }
     derived["lqr_readiness"] = lqr_readiness(warnings, rows, phys, schema)
@@ -1293,6 +1319,12 @@ def main() -> int:
     parser.add_argument("--left-command-sign", type=int, choices=(-1, 1), default=-1)
     parser.add_argument("--right-command-sign", type=int, choices=(-1, 1), default=1)
     parser.add_argument("--mass-kg", type=float)
+    parser.add_argument(
+        "--gantry-mass-kg",
+        type=float,
+        help="Moving mass of the safety gantry in kg. Added to robot mass for coastdown "
+        "force balance. Read from measurements YAML (gantry.mass_kg) if omitted.",
+    )
     parser.add_argument("--loaded-wheel-radius-m", type=float)
     parser.add_argument("--wheel-track-width-m", type=float)
     parser.add_argument("--com-height-m", type=float)
@@ -1309,6 +1341,7 @@ def main() -> int:
         command_signs={"left": args.left_command_sign, "right": args.right_command_sign},
         physical_overrides={
             "mass_kg": args.mass_kg,
+            "gantry_mass_kg": args.gantry_mass_kg,
             "loaded_wheel_radius_m": args.loaded_wheel_radius_m,
             "wheel_track_width_m": args.wheel_track_width_m,
             "com_height_m": args.com_height_m,
