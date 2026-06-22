@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <Adafruit_BNO08x.h>
 #include <MoteusTeensy.h>
+#include <sh2.h>
 
 #include <math.h>
 #include <string.h>
@@ -17,9 +18,13 @@ constexpr uint8_t kImuSdaPin = 18; //teensy i2c pins for the imu
 constexpr uint8_t kImuSclPin = 19; // ^^
 constexpr uint8_t kBno08xPrimaryAddress = 0x4A; //possible imu addresses over i2c
 constexpr uint8_t kBno08xSecondaryAddress = 0x4B; //^^^
-constexpr uint32_t kI2cClockHz = 400000; // fast i2c
+constexpr uint32_t kI2cClockHz = 100000; // standard-mode i2c; BNO08x is more reliable here on Teensy 4.1
+constexpr uint32_t kI2cFallbackClockHz = 400000; // faster diagnostic fallback
 constexpr uint32_t kImuReportIntervalUs = 10000;  // 100hz IMU streams
 constexpr uint32_t kImuTimeoutUs = 250000; //if no IMU sample arrives for 250 ms the IMU is considered "stale."
+constexpr uint32_t kImuPowerSettleMs = 500;
+constexpr uint32_t kImuFirstSampleTimeoutUs = 2000000;
+constexpr uint32_t kMaxIgnoredImuEventPrints = 5;
 
 constexpr int8_t kLeftMoteusId = 1; //canid's
 constexpr int8_t kRightMoteusId = 2;
@@ -100,6 +105,8 @@ sh2_SensorValue_t imu_event; //reusable buffer the driver fills
 struct ImuState { //latest imu reading + health
   bool initialized = false; //did begin + report setup succeed
   uint8_t address = 0; //which i2c addr answered
+  uint32_t clock_hz = 0; //which bus speed worked
+  uint32_t last_any_event_us = 0;
   uint32_t last_event_us = 0; //timestamp of last sample, also the freshness clock
   uint32_t last_gyro_us = 0;
   uint32_t last_linear_accel_us = 0;
@@ -114,6 +121,11 @@ struct ImuState { //latest imu reading + health
   float linear_accel_x_m_s2 = 0.0f;
   float linear_accel_y_m_s2 = 0.0f;
   float linear_accel_z_m_s2 = 0.0f;
+  uint32_t event_count = 0;
+  uint32_t rotation_event_count = 0;
+  uint32_t gyro_event_count = 0;
+  uint32_t linear_accel_event_count = 0;
+  uint32_t other_event_count = 0;
   uint32_t reset_count = 0; //times the chip spontaneously reset
 };
 
@@ -452,28 +464,45 @@ void printTelemetryHeader() { //csv schema tag + column header so the log is sel
   Serial.println("data,t_us,state,phase_index,phase,armed,control_tick_us,segment_elapsed_ms,left_cmd_nm,right_cmd_nm,left_mode,left_pos_rev,left_vel_rev_s,left_torque_nm,left_voltage_v,left_temp_c,left_fault,right_mode,right_pos_rev,right_vel_rev_s,right_torque_nm,right_voltage_v,right_temp_c,right_fault,imu_ok,imu_age_ms,imu_qr,imu_qi,imu_qj,imu_qk,imu_accuracy_rad,imu_gyro_x_rad_s,imu_gyro_y_rad_s,imu_gyro_z_rad_s,imu_linear_accel_x_m_s2,imu_linear_accel_y_m_s2,imu_linear_accel_z_m_s2,pitch_rad,pitch_rate_rad_s,yaw_rad,yaw_rate_rad_s,left_pos_delta_rev,right_pos_delta_rev,avg_wheel_pos_rev,diff_wheel_pos_rev,pitch_limit,speed_limit,travel_limit,fault_reason");
 }
 
-float pitchRad() {
+float sensorXRotationRad() {
   const float w = imu.quat_real;
   const float x = imu.quat_i;
   const float y = imu.quat_j;
   const float z = imu.quat_k;
-  const float sinp = clampFloat(2.0f * (w * y - z * x), -1.0f, 1.0f);
-  return asinf(sinp);
+  return atan2f(2.0f * (w * x + y * z), 1.0f - 2.0f * (x * x + y * y));
+}
+
+float sensorYRotationRad() {
+  const float w = imu.quat_real;
+  const float x = imu.quat_i;
+  const float y = imu.quat_j;
+  const float z = imu.quat_k;
+  return atan2f(2.0f * (w * y + x * z), 1.0f - 2.0f * (x * x + y * y));
+}
+
+float pitchRad() {
+  // Finn IMU mount: sensor X is left/right between wheels, so robot pitch is
+  // rotation about sensor X. Bench-check sign before using signed pitch.
+  return sensorXRotationRad();
 }
 
 float yawRad() {
-  const float w = imu.quat_real;
-  const float x = imu.quat_i;
-  const float y = imu.quat_j;
-  const float z = imu.quat_k;
-  return atan2f(2.0f * (w * z + x * y), 1.0f - 2.0f * (y * y + z * z));
+  // Finn IMU mount: sensor Y is vertical, so robot yaw is rotation about sensor Y.
+  // Yaw-rate telemetry is the primary dynamic yaw signal; this angle is for
+  // coarse heading/noise checks without external pose truth.
+  return sensorYRotationRad();
 }
 
 void printStatus() { //human-readable one-shot snapshot
   const long imu_age_ms = (imu.last_event_us == 0) ? -1L : static_cast<long>(imuAgeUs() / 1000U);
-  Serial.printf("status,state=%s,phase=%s,imu_initialized=%d,imu_fresh=%d,imu_age_ms=%ld,imu_resets=%lu,left_misses=%u,right_misses=%u,fault=%s\n",
+  Serial.printf("status,state=%s,phase=%s,imu_initialized=%d,imu_fresh=%d,imu_age_ms=%ld,imu_address=0x%02X,imu_i2c_clock_hz=%lu,imu_events=%lu,imu_rotation_events=%lu,imu_gyro_events=%lu,imu_linear_accel_events=%lu,imu_resets=%lu,left_misses=%u,right_misses=%u,fault=%s\n",
                 stateName(), activePhaseName(), imu.initialized ? 1 : 0, isImuFresh() ? 1 : 0,
-                imu_age_ms, static_cast<unsigned long>(imu.reset_count),
+                imu_age_ms, imu.address, static_cast<unsigned long>(imu.clock_hz),
+                static_cast<unsigned long>(imu.event_count),
+                static_cast<unsigned long>(imu.rotation_event_count),
+                static_cast<unsigned long>(imu.gyro_event_count),
+                static_cast<unsigned long>(imu.linear_accel_event_count),
+                static_cast<unsigned long>(imu.reset_count),
                 left_health.consecutive_misses, right_health.consecutive_misses,
                 fault_reason[0] ? fault_reason : "none");
 }
@@ -488,10 +517,10 @@ void printTelemetry() { //one csv data row: state + both motors + imu, this is t
   const float right_delta_rev = static_cast<float>(right.position - batch_start_right_pos_rev);
   const float avg_pos_rev = 0.5f * (left_delta_rev + right_delta_rev);
   const float diff_pos_rev = 0.5f * (left_delta_rev - right_delta_rev);
-  // Assumes BNO08x sensor-frame Y is robot pitch and Z is robot yaw.
-  // Confirm the physical IMU mount before using these as robot-frame rates.
-  const float pitch_rate_rad_s = imu.gyro_y_rad_s;
-  const float yaw_rate_rad_s = imu.gyro_z_rad_s;
+  // Finn IMU mount: sensor X is left/right, Y is vertical, Z is fore/aft.
+  // Confirm signs on the bench before relying on signed values.
+  const float pitch_rate_rad_s = imu.gyro_x_rad_s;
+  const float yaw_rate_rad_s = imu.gyro_y_rad_s;
 
   Serial.printf(
       "data,%lu,%s,%d,%s,%d,%lu,%lu,%.5f,%.5f,%d,%.7f,%.7f,%.5f,%.3f,%.3f,%d,%d,%.7f,%.7f,%.5f,%.3f,%.3f,%d,%d,%ld,%.7f,%.7f,%.7f,%.7f,%.5f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%d,%d,%d,%s\n",
@@ -545,28 +574,112 @@ void printTelemetry() { //one csv data row: state + both motors + imu, this is t
       fault_reason[0] ? fault_reason : "none");
 }
 
-bool configureImuReport() { //(re)enable the 100hz rotation vector report
-  const bool rv_ok = bno08x.enableReport(SH2_ROTATION_VECTOR, kImuReportIntervalUs);
-  const bool gyro_ok = bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, kImuReportIntervalUs);
-  const bool accel_ok = bno08x.enableReport(SH2_LINEAR_ACCELERATION, kImuReportIntervalUs);
-  return rv_ok && gyro_ok && accel_ok;
+const char* i2cStatusName(const uint8_t status) {
+  switch (status) {
+    case 0: return "ack";
+    case 1: return "data_too_long";
+    case 2: return "nack_address";
+    case 3: return "nack_data";
+    case 4: return "other_error";
+    case 5: return "timeout";
+    default: return "unknown";
+  }
 }
 
-bool initImuAtAddress(const uint8_t address) { //try to bring up the imu at one i2c addr
+uint8_t probeI2cAddress(const uint8_t address) {
+  Wire.beginTransmission(address);
+  return Wire.endTransmission();
+}
+
+void serviceImu(); //fwd decl, waitForFirstImuSample uses it during setup
+
+bool waitForFirstImuSample(const uint32_t timeout_us) {
+  const uint32_t start_us = micros();
+  while (!isImuFresh() && static_cast<uint32_t>(micros() - start_us) < timeout_us) {
+    serviceImu();
+    delay(1);
+  }
+  return isImuFresh();
+}
+
+bool configureImuReport() { //(re)enable the 100hz imu reports
+  bool ok = true;
+  if (!bno08x.enableReport(SH2_ROTATION_VECTOR, kImuReportIntervalUs)) {
+    printEvent("imu_report_failed", "rotation_vector_100hz");
+    ok = false;
+  } else {
+    printEvent("imu_report_enabled", "rotation_vector_100hz");
+  }
+  if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, kImuReportIntervalUs)) {
+    printEvent("imu_report_failed", "gyroscope_calibrated_100hz");
+    ok = false;
+  } else {
+    printEvent("imu_report_enabled", "gyroscope_calibrated_100hz");
+  }
+  if (!bno08x.enableReport(SH2_LINEAR_ACCELERATION, kImuReportIntervalUs)) {
+    printEvent("imu_report_failed", "linear_acceleration_100hz");
+    ok = false;
+  } else {
+    printEvent("imu_report_enabled", "linear_acceleration_100hz");
+  }
+  return ok;
+}
+
+bool initImuAtAddress(const uint8_t address, const bool probe_first) { //try to bring up the imu at one i2c addr
+  char detail[96];
+  if (probe_first) {
+    const uint8_t probe_status = probeI2cAddress(address);
+    snprintf(detail, sizeof(detail), "addr_0x%02X_status_%s_clock_%lu",
+             address, i2cStatusName(probe_status), static_cast<unsigned long>(imu.clock_hz));
+    printEvent("imu_probe", detail);
+    if (probe_status != 0) {
+      return false;
+    }
+  } else {
+    snprintf(detail, sizeof(detail), "addr_0x%02X_clock_%lu",
+             address, static_cast<unsigned long>(imu.clock_hz));
+    printEvent("imu_probe_skipped", detail);
+  }
+
+  snprintf(detail, sizeof(detail), "addr_0x%02X_clock_%lu",
+           address, static_cast<unsigned long>(imu.clock_hz));
+  printEvent("imu_begin_address", detail);
   if (!bno08x.begin_I2C(address, &Wire)) {
+    printEvent("imu_begin_failed", detail);
+    if (probeI2cAddress(address) == 0) {
+      sh2_close();
+      printEvent("imu_sh2_close", detail);
+    }
     return false;
   }
-  Wire.setClock(kI2cClockHz);
+  Wire.setClock(imu.clock_hz);
   if (!configureImuReport()) {
+    sh2_close();
+    printEvent("imu_sh2_close", "report_config_failed");
     return false;
   }
   imu.initialized = true;
   imu.address = address;
   imu.last_event_us = 0;
+  imu.last_any_event_us = 0;
   imu.last_gyro_us = 0;
   imu.last_linear_accel_us = 0;
+  imu.event_count = 0;
+  imu.rotation_event_count = 0;
+  imu.gyro_event_count = 0;
+  imu.linear_accel_event_count = 0;
+  imu.other_event_count = 0;
   Serial.printf("event,%lu,imu_initialized,address_0x%02X,rv_gyro_linear_accel_100hz\n",
                 static_cast<unsigned long>(micros()), address);
+  if (!waitForFirstImuSample(kImuFirstSampleTimeoutUs)) {
+    printEvent("imu_warning", "no_rotation_vector_within_2000ms");
+    imu.initialized = false;
+    sh2_close();
+    printEvent("imu_sh2_close", "first_sample_timeout");
+    return false;
+  } else {
+    printEvent("imu_first_sample", "rotation_vector_fresh");
+  }
   return true;
 }
 
@@ -574,15 +687,25 @@ bool initImu() { //set up i2c, try both possible addresses
   Wire.setSDA(kImuSdaPin);
   Wire.setSCL(kImuSclPin);
   Wire.begin();
-  Wire.setClock(kI2cClockHz);
 
-  Serial.printf("event,%lu,imu_begin,wire_sda_%u_scl_%u,clock_%lu\n",
-                static_cast<unsigned long>(micros()), kImuSdaPin, kImuSclPin,
-                static_cast<unsigned long>(kI2cClockHz));
+  const uint32_t clocks[] = {kI2cClockHz, kI2cFallbackClockHz};
+  const uint8_t addresses[] = {kBno08xPrimaryAddress, kBno08xSecondaryAddress};
+  for (const uint32_t clock_hz : clocks) {
+    imu.clock_hz = clock_hz;
+    Wire.setClock(clock_hz);
+    Serial.printf("event,%lu,imu_begin,wire_sda_%u_scl_%u,clock_%lu_settle_%lums\n",
+                  static_cast<unsigned long>(micros()), kImuSdaPin, kImuSclPin,
+                  static_cast<unsigned long>(clock_hz),
+                  static_cast<unsigned long>(kImuPowerSettleMs));
+    delay(kImuPowerSettleMs);
 
-  if (initImuAtAddress(kBno08xPrimaryAddress)) return true; //0x4A first
-  if (initImuAtAddress(kBno08xSecondaryAddress)) return true; //then 0x4B
-  Serial.println("event,0,imu_failed,not_found,check_i2c_wiring_or_address");
+    for (const uint8_t address : addresses) {
+      const bool probe_first = !(clock_hz == kI2cClockHz && address == kBno08xPrimaryAddress);
+      if (initImuAtAddress(address, probe_first)) return true;
+    }
+  }
+  imu.clock_hz = 0;
+  printEvent("imu_failed", "not_found_or_no_reports_at_0x4A_0x4B_400k_100k_check_i2c_wiring_address_power_timing");
   return false;
 }
 
@@ -596,6 +719,7 @@ void serviceImu() { //drain imu events each loop, handle resets
   if (bno08x.wasReset()) { //chip reset itself
     imu.reset_count++;
     imu.last_event_us = 0;
+    imu.last_any_event_us = 0;
     printEvent("imu_warning", isRunning() ? "imu_reset_during_run" : "imu_reset");
     if (!configureImuReport()) {
       imu.initialized = false;
@@ -610,6 +734,8 @@ void serviceImu() { //drain imu events each loop, handle resets
       break;
     }
     const uint32_t event_us = micros();
+    imu.event_count++;
+    imu.last_any_event_us = event_us;
     if (imu_event.sensorId == SH2_ROTATION_VECTOR) {
       const auto& quat = imu_event.un.rotationVector;
       imu.quat_real = quat.real;
@@ -618,18 +744,28 @@ void serviceImu() { //drain imu events each loop, handle resets
       imu.quat_k = quat.k;
       imu.accuracy_rad = quat.accuracy;
       imu.last_event_us = event_us; //rotation vector is the critical freshness clock
+      imu.rotation_event_count++;
     } else if (imu_event.sensorId == SH2_GYROSCOPE_CALIBRATED) {
       const auto& gyro = imu_event.un.gyroscope;
       imu.gyro_x_rad_s = gyro.x;
       imu.gyro_y_rad_s = gyro.y;
       imu.gyro_z_rad_s = gyro.z;
       imu.last_gyro_us = event_us;
+      imu.gyro_event_count++;
     } else if (imu_event.sensorId == SH2_LINEAR_ACCELERATION) {
       const auto& accel = imu_event.un.linearAcceleration;
       imu.linear_accel_x_m_s2 = accel.x;
       imu.linear_accel_y_m_s2 = accel.y;
       imu.linear_accel_z_m_s2 = accel.z;
       imu.last_linear_accel_us = event_us;
+      imu.linear_accel_event_count++;
+    } else {
+      if (imu.other_event_count < kMaxIgnoredImuEventPrints) {
+        char detail[64];
+        snprintf(detail, sizeof(detail), "sensor_0x%02X", imu_event.sensorId);
+        printEvent("imu_event_ignored", detail);
+      }
+      imu.other_event_count++;
     }
   }
 }
