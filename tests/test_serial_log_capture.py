@@ -9,6 +9,7 @@ import select
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -594,6 +595,18 @@ def test_batch2_postprocess_reads_v1_schema_and_segment_end(tmp_path: Path):
     assert parsed[1]["elapsed_ms"] == 600
 
 
+def test_batch2_postprocess_rejects_malformed_telemetry_rows(tmp_path: Path):
+    telemetry = tmp_path / "telemetry.csv"
+    telemetry.write_text(
+        "schema,batch2_v1\n"
+        "data,t_us,state,fault_reason\n"
+        "data,1,running_batch2\n"
+    )
+
+    with pytest.raises(ValueError, match="Malformed telemetry row"):
+        batch2_post.read_batch2_rows(telemetry)
+
+
 def test_batch2_physical_inputs_read_repo_measurements():
     measurements = batch2_post.load_measurements(ROOT / "sim" / "config" / "finn_measurements.yaml")
     phys = batch2_post.physical_inputs(measurements)
@@ -1110,7 +1123,7 @@ def test_lqr_readiness_has_batch2_schema_false_for_wrong_schema(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     # Write a file with the wrong schema tag
-    (run_dir / "telemetry.csv").write_text("schema,batch2_v2\n")
+    (run_dir / "telemetry.csv").write_text("schema,batch2_unknown\n")
     (run_dir / "events.log").write_text("")
 
     derived = batch2_post.analyze_run(

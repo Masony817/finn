@@ -18,7 +18,9 @@ import yaml
 RAD_PER_REV = 2.0 * math.pi
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MEASUREMENTS = REPO_ROOT / "sim" / "config" / "finn_measurements.yaml"
-ROBOT_FORWARD_ACCEL_FIELD = "imu_linear_accel_z_m_s2"
+RAW_SENSOR_FORWARD_ACCEL_FIELD = "imu_linear_accel_z_m_s2"
+ROBOT_FORWARD_ACCEL_FIELD = "robot_forward_accel_m_s2"
+SUPPORTED_SCHEMAS = {"batch2_v1", "batch2_v2"}
 
 NUMERIC_FIELDS = {
     "t_us",
@@ -55,6 +57,7 @@ NUMERIC_FIELDS = {
     "imu_linear_accel_x_m_s2",
     "imu_linear_accel_y_m_s2",
     "imu_linear_accel_z_m_s2",
+    "robot_forward_accel_m_s2",
     "pitch_rad",
     "pitch_rate_rad_s",
     "yaw_rad",
@@ -101,6 +104,14 @@ def read_batch2_rows(telemetry: Path) -> list[dict[str, str]]:
     )
     if header_index is None:
         return []
+    header = data_lines[header_index].split(",")
+    for line_number, line in enumerate(data_lines[header_index + 1 :], start=header_index + 2):
+        field_count = len(line.split(","))
+        if field_count != len(header):
+            raise ValueError(
+                f"Malformed telemetry row in {telemetry} at data line {line_number}: "
+                f"expected {len(header)} fields, got {field_count}"
+            )
     return list(csv.DictReader(data_lines[header_index:]))
 
 
@@ -143,6 +154,11 @@ def rows_as_numeric(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         item: dict[str, Any] = {}
         for key, value in row.items():
             item[key] = _to_float(value) if key in NUMERIC_FIELDS else value
+        if ROBOT_FORWARD_ACCEL_FIELD not in item or not math.isfinite(
+            _to_float(item.get(ROBOT_FORWARD_ACCEL_FIELD))
+        ):
+            raw_z = _to_float(item.get(RAW_SENSOR_FORWARD_ACCEL_FIELD))
+            item[ROBOT_FORWARD_ACCEL_FIELD] = -raw_z if math.isfinite(raw_z) else math.nan
         converted.append(item)
     return converted
 
@@ -196,6 +212,15 @@ def _duration_s(group: list[dict[str, Any]]) -> float:
 
 
 def _series(rows: list[dict[str, Any]], field: str) -> np.ndarray:
+    if field == ROBOT_FORWARD_ACCEL_FIELD:
+        values = []
+        for row in rows:
+            value = _to_float(row.get(ROBOT_FORWARD_ACCEL_FIELD))
+            if not math.isfinite(value):
+                raw_z = _to_float(row.get(RAW_SENSOR_FORWARD_ACCEL_FIELD))
+                value = -raw_z if math.isfinite(raw_z) else math.nan
+            values.append(value)
+        return np.array(values, dtype=float)
     return np.array([float(row.get(field, math.nan)) for row in rows], dtype=float)
 
 
@@ -454,6 +479,80 @@ def fit_loaded_coastdown_loss(
     )
 
 
+def side_coastdown_diagnostics(
+    rows: list[dict[str, Any]],
+    radius_m: float | None,
+    mass_kg: float | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for side in ("left", "right"):
+        segments = [
+            group
+            for phase, group in _group_by_phase(rows)
+            if phase.startswith(f"coastdown_{side}_") and "settle" not in phase and len(group) >= 8
+        ]
+        if not radius_m or radius_m <= 0:
+            result[side] = {
+                "sample_count": 0,
+                "linear_damping_s": None,
+                "friction_accel_m_s2": None,
+                "per_wheel_torque_nm": None,
+                "rmse_m_s": None,
+                "confidence": "insufficient",
+                "notes": ["missing_loaded_radius_m"],
+            }
+            continue
+
+        velocities: list[float] = []
+        accelerations: list[float] = []
+        field = f"{side}_vel_rev_s"
+        for group in segments:
+            t = _series(group, "t_us") / 1_000_000.0
+            v = _series(group, field) * RAD_PER_REV * radius_m
+            finite = np.isfinite(t) & np.isfinite(v)
+            t, v = t[finite], v[finite]
+            if len(t) < 8 or float(np.max(np.abs(v))) < 0.01:
+                continue
+            accel = np.gradient(v, t)
+            mask = np.abs(v) >= 0.01
+            velocities.extend(v[mask].tolist())
+            accelerations.extend(accel[mask].tolist())
+
+        if len(velocities) < 20:
+            result[side] = {
+                "sample_count": len(velocities),
+                "linear_damping_s": None,
+                "friction_accel_m_s2": None,
+                "per_wheel_torque_nm": None,
+                "rmse_m_s": None,
+                "confidence": "insufficient",
+                "notes": ["too_few_side_coastdown_samples"],
+            }
+            continue
+
+        v_arr = np.array(velocities, dtype=float)
+        a_arr = np.array(accelerations, dtype=float)
+        design = np.column_stack([-v_arr, -np.sign(v_arr)])
+        coeff, *_ = np.linalg.lstsq(design, a_arr, rcond=None)
+        damping = max(0.0, float(coeff[0]))
+        friction_accel = max(0.0, float(coeff[1]))
+        predicted = design @ np.array([damping, friction_accel])
+        rmse = float(np.sqrt(np.mean((predicted - a_arr) ** 2)))
+        per_wheel_torque = None
+        if mass_kg and mass_kg > 0:
+            per_wheel_torque = 0.5 * mass_kg * friction_accel * radius_m
+        result[side] = {
+            "sample_count": len(velocities),
+            "linear_damping_s": _finite_or_none(damping),
+            "friction_accel_m_s2": _finite_or_none(friction_accel),
+            "per_wheel_torque_nm": _finite_or_none(per_wheel_torque),
+            "rmse_m_s": _finite_or_none(rmse),
+            "confidence": "measured" if len(velocities) >= 40 and rmse < 0.5 else "provisional",
+            "notes": ["single_wheel_loaded_coastdown_diagnostic"],
+        }
+    return result
+
+
 def tire_traction_lower_bounds(
     rows: list[dict[str, Any]],
     radius_m: float | None,
@@ -525,12 +624,17 @@ def yaw_response(
         }
     eff_track = float(np.median(np.abs(ratios)))
     correction = eff_track / track_width_m if track_width_m and track_width_m > 0 else None
+    notes = []
+    confidence = "measured" if len(ratios) >= 40 else "provisional"
+    if correction is not None and not (0.5 <= correction <= 1.5):
+        confidence = "implausible"
+        notes.append("effective_track_width_outside_measured_geometry_plausibility")
     return {
         "sample_count": len(ratios),
         "effective_track_width_m": _finite_or_none(eff_track, 6),
         "track_width_correction": _finite_or_none(correction, 6),
-        "confidence": "measured" if len(ratios) >= 40 else "provisional",
-        "notes": [],
+        "confidence": confidence,
+        "notes": notes,
     }
 
 
@@ -548,6 +652,54 @@ def stationary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if is_stationary_phase and stopped:
             result.append(row)
     return result
+
+
+def imu_axis_check(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    axis_rows = [
+        row
+        for row in rows
+        if str(row.get("phase", "")).lower() == "imu_axis_check_manual_push_forward"
+    ]
+    if not axis_rows:
+        return {
+            "row_count": 0,
+            "forward_axis_field": ROBOT_FORWARD_ACCEL_FIELD,
+            "positive_peak_m_s2": None,
+            "negative_peak_m_s2": None,
+            "status": "missing",
+            "notes": ["missing_manual_forward_push_segment"],
+        }
+
+    accel = _finite_series(axis_rows, ROBOT_FORWARD_ACCEL_FIELD)
+    if len(accel) == 0:
+        return {
+            "row_count": len(axis_rows),
+            "forward_axis_field": ROBOT_FORWARD_ACCEL_FIELD,
+            "positive_peak_m_s2": None,
+            "negative_peak_m_s2": None,
+            "status": "insufficient",
+            "notes": ["no_finite_forward_accel_samples"],
+        }
+
+    positive_peak = float(np.max(accel))
+    negative_peak = float(np.min(accel))
+    if positive_peak >= 0.10 and positive_peak >= abs(negative_peak):
+        status = "positive_z_forward"
+        notes: list[str] = []
+    elif abs(negative_peak) >= 0.10 and abs(negative_peak) > positive_peak:
+        status = "negative_z_forward_check_sign"
+        notes = ["manual_forward_push_produced_negative_z_accel"]
+    else:
+        status = "insufficient_excitation"
+        notes = ["manual_forward_push_peak_below_0p10_m_s2"]
+    return {
+        "row_count": len(axis_rows),
+        "forward_axis_field": ROBOT_FORWARD_ACCEL_FIELD,
+        "positive_peak_m_s2": _finite_or_none(positive_peak, 6),
+        "negative_peak_m_s2": _finite_or_none(negative_peak, 6),
+        "status": status,
+        "notes": notes,
+    }
 
 
 def noise_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -694,7 +846,7 @@ def estimate_loaded_radius(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """
     ratios: list[float] = []
     for phase, group in _group_by_phase(rows):
-        if not (phase.startswith("straight_") or phase.startswith("coast_spinup")):
+        if not (phase.startswith("straight_") or phase.startswith("coast_spinup_average_")):
             continue
         if "settle" in phase:
             continue
@@ -795,10 +947,22 @@ def decompose_losses(
 
     total_friction = float(loss_fit.friction_accel_m_s2)
     total_damping = float(loss_fit.linear_damping_s)
+    motor_frac = motor_friction_accel / total_friction if total_friction > 1e-9 else None
+    if motor_frac is not None and motor_frac > 1.05:
+        return {
+            "motor_friction_accel_m_s2": _finite_or_none(motor_friction_accel, 8),
+            "motor_damping_s": _finite_or_none(motor_damping_s, 8),
+            "tire_friction_accel_m_s2": None,
+            "tire_damping_s": None,
+            "rolling_resistance_coeff": None,
+            "motor_fraction_of_total_friction": _finite_or_none(motor_frac, 4),
+            "confidence": "inconsistent",
+            "notes": ["batch1_motor_loss_exceeds_batch2_loaded_loss"],
+        }
+
     tire_friction = max(0.0, total_friction - motor_friction_accel)
     tire_damping = max(0.0, total_damping - motor_damping_s)
     rolling_coeff = tire_friction / 9.80665
-    motor_frac = motor_friction_accel / total_friction if total_friction > 1e-9 else None
 
     return {
         "motor_friction_accel_m_s2": _finite_or_none(motor_friction_accel, 8),
@@ -850,6 +1014,25 @@ def actuator_cross_check(
     }
 
 
+def selected_loaded_radius(
+    radius_est: dict[str, Any],
+    phys: dict[str, Any],
+) -> tuple[float | None, str, str]:
+    estimate = _to_float(radius_est.get("radius_m"))
+    estimate_confidence = str(radius_est.get("confidence", "insufficient"))
+    measured = phys.get("loaded_wheel_radius_m")
+    if math.isfinite(estimate) and estimate_confidence == "measured":
+        return estimate, "measured", "batch2_imu_wheel_kinematic_ratio"
+    if measured is not None and math.isfinite(float(measured)):
+        source = "finn_measurements_yaml"
+        if math.isfinite(estimate):
+            source = "finn_measurements_yaml_after_provisional_batch2_radius"
+        return float(measured), "physical_measurement_fallback", source
+    if math.isfinite(estimate):
+        return estimate, estimate_confidence, "batch2_imu_wheel_kinematic_ratio"
+    return None, "insufficient", "missing_loaded_radius_m"
+
+
 def mujoco_params(
     b1: dict[str, Any],
     radius_est: dict[str, Any],
@@ -864,11 +1047,14 @@ def mujoco_params(
     → postprocess_mujoco.py → finn.sim.xml.  Parameters that require batch 3 to
     identify (solref, solimp) are explicitly set to None here.
     """
-    radius_m = radius_est.get("radius_m") or phys.get("loaded_wheel_radius_m")
+    radius_m, radius_confidence, radius_source = selected_loaded_radius(radius_est, phys)
     open_params = []
     if radius_m is None:
         open_params.append("loaded_wheel_radius_m")
-    if loss_decomp.get("rolling_resistance_coeff") is None:
+    if (
+        loss_decomp.get("rolling_resistance_coeff") is None
+        or loss_decomp.get("confidence") != "measured"
+    ):
         open_params.append("rolling_resistance_coeff")
     open_params.extend(["contact_solref", "contact_solimp"])
 
@@ -884,24 +1070,26 @@ def mujoco_params(
             "source": "batch1_off_ground_sysid",
         }
 
-    radius_source = (
-        "batch2_imu_wheel_kinematic_ratio"
-        if radius_est.get("radius_m") is not None
-        else "finn_measurements_yaml"
-    )
+    yaw_width_m = yaw.get("effective_track_width_m")
+    yaw_width_confidence = yaw.get("confidence", "insufficient")
+    yaw_width_source = "batch2_differential_yaw_response"
+    if yaw_width_confidence == "implausible":
+        yaw_width_m = phys.get("wheel_track_width_m")
+        yaw_width_confidence = "physical_measurement_fallback"
+        yaw_width_source = "finn_measurements_yaml_after_implausible_batch2_yaw_response"
 
     return {
         "actuators": actuators,
         "geometry": {
             "loaded_wheel_radius_m": {
                 "value": radius_m,
-                "confidence": radius_est.get("confidence", "insufficient"),
+                "confidence": radius_confidence,
                 "source": radius_source,
             },
             "effective_track_width_m": {
-                "value": yaw.get("effective_track_width_m"),
-                "confidence": yaw.get("confidence", "insufficient"),
-                "source": "batch2_differential_yaw_response",
+                "value": yaw_width_m,
+                "confidence": yaw_width_confidence,
+                "source": yaw_width_source,
             },
         },
         "contact": {
@@ -917,7 +1105,7 @@ def mujoco_params(
             "batch3_can_proceed": all(
                 [
                     radius_m is not None,
-                    yaw.get("effective_track_width_m") is not None,
+                    yaw_width_m is not None,
                     b1.get("left", {}).get("frictionloss_nm") is not None,
                 ]
             ),
@@ -930,7 +1118,7 @@ def lqr_readiness(
     warnings: list[str], rows: list[dict[str, Any]], phys: dict[str, Any], schema: str | None
 ) -> dict[str, Any]:
     checklist = {
-        "has_batch2_schema": schema == "batch2_v1",
+        "has_batch2_schema": schema in SUPPORTED_SCHEMAS,
         "has_rows": len(rows) > 0,
         "has_stationary_noise": len(stationary_rows(rows)) >= 100,
         "has_loaded_radius": bool(phys.get("loaded_wheel_radius_m")),
@@ -990,7 +1178,7 @@ def analyze_run(
             f"gantry_present_mass_{gantry_mass_kg:.3f}_kg_ratio_{ratio:.2f}_"
             "coastdown_uses_system_mass_rolling_resistance_includes_caster_friction"
         )
-    if schema != "batch2_v1":
+    if schema not in SUPPORTED_SCHEMAS:
         warnings.append(f"unexpected_or_missing_schema_{schema}")
     if not rows:
         warnings.append("no_telemetry_rows")
@@ -1014,11 +1202,21 @@ def analyze_run(
         if event.get("event") == "segment_end" and event.get("reason") == "safety_limit":
             warnings.append(f"safety_limit_{event.get('phase')}")
 
-    loss_fit = fit_loaded_coastdown_loss(
-        rows, phys.get("loaded_wheel_radius_m"), system_mass_kg
-    )
+    measured_radius = phys.get("loaded_wheel_radius_m")
+    loss_fit = fit_loaded_coastdown_loss(rows, measured_radius, system_mass_kg)
+    side_coast = side_coastdown_diagnostics(rows, measured_radius, system_mass_kg)
     yaw = yaw_response(rows, phys.get("loaded_wheel_radius_m"), phys.get("wheel_track_width_m"))
+    if yaw.get("confidence") == "implausible":
+        warnings.append("effective_track_width_outside_measured_geometry_plausibility")
     noise = noise_stats(rows)
+    axis_check = imu_axis_check(rows)
+    axis_sign_confirmed = schema == "batch2_v2" or axis_check["status"] == "positive_z_forward"
+    if axis_check["status"] == "missing" and schema != "batch2_v2":
+        warnings.append("missing_imu_axis_check_manual_push_forward")
+    elif axis_check["status"] == "negative_z_forward_check_sign":
+        warnings.append("imu_axis_check_forward_push_negative_z_check_sign")
+    elif axis_check["status"] == "insufficient_excitation":
+        warnings.append("imu_axis_check_forward_push_insufficient_excitation")
     delays = delay_estimates(rows)
     summaries = segment_summaries(rows, events)
     voltage_temp = voltage_temp_summary(rows)
@@ -1026,7 +1224,12 @@ def analyze_run(
         rows, phys.get("loaded_wheel_radius_m"), phys.get("wheel_track_width_m")
     )
     radius_est = estimate_loaded_radius(rows)
-    radius_for_decomp = radius_est.get("radius_m") or phys.get("loaded_wheel_radius_m")
+    radius_for_decomp, radius_confidence, _ = selected_loaded_radius(radius_est, phys)
+    if (
+        radius_est.get("radius_m") is not None
+        and radius_confidence == "physical_measurement_fallback"
+    ):
+        warnings.append("loaded_radius_estimate_not_promoted_using_physical_measurement")
     loss_decomp = decompose_losses(
         loss_fit,
         b1_priors.get("left", {}),
@@ -1036,6 +1239,8 @@ def analyze_run(
         b1_priors.get("left", {}).get("total_wheel_inertia_kg_m2"),
         b1_priors.get("right", {}).get("total_wheel_inertia_kg_m2"),
     )
+    if loss_decomp.get("confidence") == "inconsistent":
+        warnings.extend(str(note) for note in loss_decomp.get("notes", []))
     b2_tracking_left = actuator_tracking(rows, "left")
     b2_tracking_right = actuator_tracking(rows, "right")
     cross_check_left = actuator_cross_check(b2_tracking_left, b1_priors.get("left", {}))
@@ -1093,6 +1298,7 @@ def analyze_run(
                     "confidence": loss_fit.confidence,
                     "bound_active": loss_fit.bound_active,
                 },
+                "side_coastdown_diagnostics": side_coast,
                 "left_right_asymmetry": {
                     "mean_torque_delta_nm": _finite_or_none(
                         float(
@@ -1128,6 +1334,7 @@ def analyze_run(
                 "notes": ["do_not_emit_confident_solref_or_solimp_from_onboard_only_batch2"],
             },
             "sensors": noise,
+            "imu_axis_check_manual_push_forward": axis_check,
             "delays": delays,
         },
         "diagnostics": {
@@ -1161,8 +1368,12 @@ def analyze_run(
             "contact_solimp",
             "contact_compliance",
             "full_body_inertia_from_onboard_batch2_only",
-            "signed_robot_frame_pitch_yaw_forward_accel_until_imu_axis_signs_confirmed",
-        ],
+        ]
+        + (
+            []
+            if axis_sign_confirmed
+            else ["signed_robot_frame_pitch_yaw_forward_accel_until_imu_axis_signs_confirmed"]
+        ),
     }
     derived["lqr_readiness"] = lqr_readiness(warnings, rows, phys, schema)
     return derived
@@ -1188,8 +1399,10 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
     wheel = sim["wheels"]
     contact = sim["contact"]
     loaded_loss = wheel["loaded_loss_correction"]
+    side_coast = wheel.get("side_coastdown_diagnostics", {})
     yaw = wheel["yaw_response"]
     traction = contact["tire_friction_lower_bounds"]
+    axis_check = sim.get("imu_axis_check_manual_push_forward", {})
     loss_decomp = wheel.get("loaded_loss_decomposition", {})
     radius_est = wheel.get("loaded_radius_estimate", {})
     mujoco = derived.get("mujoco_params", {})
@@ -1228,8 +1441,25 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
             f"{radius_est.get('radius_m')} | {radius_est.get('confidence', 'insufficient')} |",
             f"| effective track width m | {yaw['effective_track_width_m']} | {yaw['confidence']} |",
             f"| straight mu lower bound | {traction['straight_mu_lower_bound']} | lower_bound |",
+            f"| IMU forward-axis check | {axis_check.get('status')} | diagnostic |",
         ]
     )
+
+    lines.extend(
+        [
+            "",
+            "## Side Coastdown Diagnostics",
+            "",
+            "| Side | samples | friction accel m/s^2 | damping s | confidence |",
+            "| --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for side in ("left", "right"):
+        diag = side_coast.get(side, {})
+        lines.append(
+            f"| {side} | {diag.get('sample_count')} | {diag.get('friction_accel_m_s2')} | "
+            f"{diag.get('linear_damping_s')} | {diag.get('confidence')} |"
+        )
 
     lines.extend(
         [

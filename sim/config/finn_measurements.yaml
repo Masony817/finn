@@ -89,9 +89,10 @@ wheels:
       source: measured
       notes: Loaded physical diameter was approximately 162 mm.
     width_m:
-      value:
+      value: 0.053
       unit: m
-      source: todo
+      source: measured
+      notes: Physical width of one tire/wheel measured on the robot, 53 mm.
     mass_kg:
       value: 2.1
       unit: kg
@@ -131,9 +132,10 @@ wheels:
       source: measured
       notes: Loaded physical diameter was approximately 162 mm.
     width_m:
-      value:
+      value: 0.053
       unit: m
-      source: todo
+      source: measured
+      notes: Physical width of one tire/wheel measured on the robot, 53 mm.
     mass_kg:
       value: 2.1
       unit: kg
