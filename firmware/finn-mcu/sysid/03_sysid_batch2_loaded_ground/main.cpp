@@ -21,7 +21,8 @@ constexpr uint8_t kBno08xSecondaryAddress = 0x4B; //^^^
 constexpr uint32_t kI2cClockHz = 100000; // standard-mode i2c; BNO08x is more reliable here on Teensy 4.1
 constexpr uint32_t kI2cFallbackClockHz = 400000; // faster diagnostic fallback
 constexpr uint32_t kImuReportIntervalUs = 10000;  // 100hz IMU streams
-constexpr uint32_t kImuTimeoutUs = 250000; //if no IMU sample arrives for 250 ms the IMU is considered "stale."
+constexpr uint32_t kImuAliveTimeoutUs = 250000; //if no IMU report arrives for 250 ms the IMU is considered offline.
+constexpr uint32_t kImuQuaternionTimeoutUs = 250000; //fused attitude warning threshold; gyro keeps pitch current between updates.
 constexpr uint32_t kImuPowerSettleMs = 500;
 constexpr uint32_t kImuFirstSampleTimeoutUs = 2000000;
 constexpr uint32_t kMaxIgnoredImuEventPrints = 5;
@@ -54,10 +55,11 @@ constexpr uint32_t kStraightPulseMs = 600;
 constexpr uint32_t kStraightCoastMs = 1200;
 constexpr uint32_t kYawPulseMs = 500;
 constexpr uint32_t kYawCoastMs = 1000;
-constexpr uint32_t kCoastSpinupMaxMs = 3500;
+constexpr uint32_t kCoastSpinupMaxMs = 6000;
 constexpr uint32_t kCoastdownMaxMs = 6000;
 constexpr uint32_t kCoastSettleMs = 800;
 constexpr uint32_t kPrbsDurationMs = 20000;
+constexpr float kPrbsTorqueNm = 0.12f;
 
 // The official mjbots Teensy example uses 1 Mbps arbitration and data rate
 // with BRS disabled. That is intentionally conservative for early bringup.
@@ -123,6 +125,7 @@ struct ImuState { //latest imu reading + health
   float linear_accel_z_m_s2 = 0.0f;
   uint32_t event_count = 0;
   uint32_t rotation_event_count = 0;
+  uint32_t game_rotation_event_count = 0;
   uint32_t gyro_event_count = 0;
   uint32_t linear_accel_event_count = 0;
   uint32_t other_event_count = 0;
@@ -203,14 +206,17 @@ constexpr float kBreakawayTorquesNm[] = {0.04f, 0.08f, 0.12f};
 constexpr float kStraightPulseTorquesNm[] = {0.06f, 0.12f, 0.18f, 0.24f};
 constexpr float kYawPulseTorquesNm[] = {0.04f, 0.08f, 0.12f, 0.18f};
 constexpr float kCoastTargetsRevS[] = {0.50f, 1.00f, 1.50f};
+constexpr float kSideCoastTargetsRevS[] = {0.50f};
 constexpr size_t kSignDirectionCount = 2; // forward, reverse
+constexpr size_t kSideCount = 2;
 constexpr size_t kBreakawayRounds = 3;
 constexpr size_t kBreakawaySegmentCount = kBreakawayRounds * kSignDirectionCount * (sizeof(kBreakawayTorquesNm) / sizeof(kBreakawayTorquesNm[0])) * 2;
 constexpr size_t kStraightSegmentCount = kBreakawayRounds * kSignDirectionCount * (sizeof(kStraightPulseTorquesNm) / sizeof(kStraightPulseTorquesNm[0])) * 2;
 constexpr size_t kYawSegmentCount = kBreakawayRounds * kSignDirectionCount * (sizeof(kYawPulseTorquesNm) / sizeof(kYawPulseTorquesNm[0])) * 2;
 constexpr size_t kCoastSegmentCount = kSignDirectionCount * (sizeof(kCoastTargetsRevS) / sizeof(kCoastTargetsRevS[0])) * 3;
+constexpr size_t kSideCoastSegmentCount = kSideCount * kSignDirectionCount * (sizeof(kSideCoastTargetsRevS) / sizeof(kSideCoastTargetsRevS[0])) * 3;
 constexpr size_t kPrbsSegmentCount = 4;
-constexpr size_t kBatch2SegmentCount = 1 + kBreakawaySegmentCount + kStraightSegmentCount + kYawSegmentCount + kCoastSegmentCount + kPrbsSegmentCount + 1;
+constexpr size_t kBatch2SegmentCount = 1 + kBreakawaySegmentCount + kStraightSegmentCount + kYawSegmentCount + kCoastSegmentCount + kSideCoastSegmentCount + kPrbsSegmentCount + 1;
 
 // run-state
 SystemState state = SystemState::kSafeIdle;
@@ -237,11 +243,22 @@ bool imu_stale_warning_active = false;
 bool pitch_limit_active = false;
 bool speed_limit_active = false;
 bool travel_limit_active = false;
+bool pitch_zero_valid = false;
+float pitch_zero_rad = 0.0f;
+float relative_pitch_rad = 0.0f;
+uint32_t last_pitch_gyro_us = 0;
 
 float clampFloat(const float value, const float low, const float high) { //min/max clamp
   if (value < low) return low;
   if (value > high) return high;
   return value;
+}
+
+float wrapPi(const float value) {
+  float wrapped = value;
+  while (wrapped > PI) wrapped -= 2.0f * PI;
+  while (wrapped < -PI) wrapped += 2.0f * PI;
+  return wrapped;
 }
 
 void formatFloatTag(const float value, char* out, const size_t out_size) {
@@ -377,10 +394,45 @@ BatchSegment batchSegmentAt(const size_t index) {
   }
 
   local -= kCoastSegmentCount;
+  if (local < kSideCoastSegmentCount) {
+    const size_t triple_index = local / 3;
+    const size_t step_in_triple = local % 3;
+    const size_t target_count = sizeof(kSideCoastTargetsRevS) / sizeof(kSideCoastTargetsRevS[0]);
+    const size_t target_index = triple_index % target_count;
+    const size_t sign_index = (triple_index / target_count) % kSignDirectionCount;
+    const size_t side_index = triple_index / (target_count * kSignDirectionCount);
+    const WheelSelect wheel = (side_index == 0) ? WheelSelect::kLeft : WheelSelect::kRight;
+    const int8_t sign = signFromDirectionIndex(sign_index);
+    const float target = kSideCoastTargetsRevS[target_index];
+    const float torque = sign * kMaxTestCommandNm;
+    const char* dir = sign > 0 ? "pos" : "neg";
+    char tag[24];
+    formatFloatTag(target, tag, sizeof(tag));
+    if (step_in_triple == 0) {
+      snprintf(active_segment_name, sizeof(active_segment_name), "coast_spinup_%s_%s_%srps",
+               sideName(wheel), dir, tag);
+      const float left_torque = (wheel == WheelSelect::kLeft) ? torque : 0.0f;
+      const float right_torque = (wheel == WheelSelect::kRight) ? torque : 0.0f;
+      return makeSegment(active_segment_name, SegmentMode::kSpinupUntilVelocity, wheel,
+                         kCoastSpinupMaxMs, 300, left_torque, right_torque, target);
+    }
+    if (step_in_triple == 1) {
+      snprintf(active_segment_name, sizeof(active_segment_name), "coastdown_%s_%s_%srps",
+               sideName(wheel), dir, tag);
+      return makeSegment(active_segment_name, SegmentMode::kCoastUntilSlow, wheel,
+                         kCoastdownMaxMs, 500, 0.0f, 0.0f, kSlowVelocityRevS);
+    }
+    snprintf(active_segment_name, sizeof(active_segment_name), "coastdown_%s_%s_%srps_settle",
+             sideName(wheel), dir, tag);
+    return makeSegment(active_segment_name, SegmentMode::kStop, wheel, kCoastSettleMs, 0,
+                       0.0f, 0.0f, 0.0f);
+  }
+
+  local -= kSideCoastSegmentCount;
   if (local == 0) {
     snprintf(active_segment_name, sizeof(active_segment_name), "prbs_straight");
     return makeSegment(active_segment_name, SegmentMode::kPrbsStraight, WheelSelect::kAverage,
-                       kPrbsDurationMs, 0, 0.06f, 0.06f, 0.0f);
+                       kPrbsDurationMs, 0, kPrbsTorqueNm, kPrbsTorqueNm, 0.0f);
   }
   if (local == 1) {
     snprintf(active_segment_name, sizeof(active_segment_name), "prbs_straight_settle");
@@ -390,7 +442,7 @@ BatchSegment batchSegmentAt(const size_t index) {
   if (local == 2) {
     snprintf(active_segment_name, sizeof(active_segment_name), "prbs_differential");
     return makeSegment(active_segment_name, SegmentMode::kPrbsDifferential, WheelSelect::kDifferential,
-                       kPrbsDurationMs, 0, 0.06f, -0.06f, 0.0f);
+                       kPrbsDurationMs, 0, kPrbsTorqueNm, -kPrbsTorqueNm, 0.0f);
   }
   if (local == 3) {
     snprintf(active_segment_name, sizeof(active_segment_name), "prbs_differential_settle");
@@ -434,13 +486,22 @@ bool isArmed() { //armed or running
   return state == SystemState::kArmedIdle || state == SystemState::kRunningBatch2;
 }
 
-uint32_t imuAgeUs() { //us since last imu sample, max if none yet
+uint32_t imuAgeUs() { //us since last quaternion sample, max if none yet
   if (imu.last_event_us == 0) return UINT32_MAX;
   return static_cast<uint32_t>(micros() - imu.last_event_us); //unsigned sub, wrap-safe
 }
 
-bool isImuFresh() { //up + at least one sample within the timeout
-  return imu.initialized && imu.last_event_us != 0 && imuAgeUs() <= kImuTimeoutUs;
+uint32_t imuAnyAgeUs() { //us since any imu report, max if none yet
+  if (imu.last_any_event_us == 0) return UINT32_MAX;
+  return static_cast<uint32_t>(micros() - imu.last_any_event_us);
+}
+
+bool isImuFresh() { //up + at least one quaternion sample within the attitude timeout
+  return imu.initialized && imu.last_event_us != 0 && imuAgeUs() <= kImuQuaternionTimeoutUs;
+}
+
+bool isImuAlive() { //up + any report stream is still arriving
+  return imu.initialized && imu.last_any_event_us != 0 && imuAnyAgeUs() <= kImuAliveTimeoutUs;
 }
 
 void printEvent(const char* event, const char* detail) { //one-line csv event record
@@ -460,8 +521,8 @@ void printHelp() { //operator command list
 }
 
 void printTelemetryHeader() { //csv schema tag + column header so the log is self-describing
-  Serial.println("schema,batch2_v1");
-  Serial.println("data,t_us,state,phase_index,phase,armed,control_tick_us,segment_elapsed_ms,left_cmd_nm,right_cmd_nm,left_mode,left_pos_rev,left_vel_rev_s,left_torque_nm,left_voltage_v,left_temp_c,left_fault,right_mode,right_pos_rev,right_vel_rev_s,right_torque_nm,right_voltage_v,right_temp_c,right_fault,imu_ok,imu_age_ms,imu_qr,imu_qi,imu_qj,imu_qk,imu_accuracy_rad,imu_gyro_x_rad_s,imu_gyro_y_rad_s,imu_gyro_z_rad_s,imu_linear_accel_x_m_s2,imu_linear_accel_y_m_s2,imu_linear_accel_z_m_s2,pitch_rad,pitch_rate_rad_s,yaw_rad,yaw_rate_rad_s,left_pos_delta_rev,right_pos_delta_rev,avg_wheel_pos_rev,diff_wheel_pos_rev,pitch_limit,speed_limit,travel_limit,fault_reason");
+  Serial.println("schema,batch2_v2");
+  Serial.println("data,t_us,state,phase_index,phase,armed,control_tick_us,segment_elapsed_ms,left_cmd_nm,right_cmd_nm,left_mode,left_pos_rev,left_vel_rev_s,left_torque_nm,left_voltage_v,left_temp_c,left_fault,right_mode,right_pos_rev,right_vel_rev_s,right_torque_nm,right_voltage_v,right_temp_c,right_fault,imu_ok,imu_age_ms,imu_qr,imu_qi,imu_qj,imu_qk,imu_accuracy_rad,imu_gyro_x_rad_s,imu_gyro_y_rad_s,imu_gyro_z_rad_s,imu_linear_accel_x_m_s2,imu_linear_accel_y_m_s2,imu_linear_accel_z_m_s2,robot_forward_accel_m_s2,pitch_rad,pitch_rate_rad_s,yaw_rad,yaw_rate_rad_s,left_pos_delta_rev,right_pos_delta_rev,avg_wheel_pos_rev,diff_wheel_pos_rev,pitch_limit,speed_limit,travel_limit,fault_reason");
 }
 
 float sensorXRotationRad() {
@@ -477,13 +538,15 @@ float sensorYRotationRad() {
   const float x = imu.quat_i;
   const float y = imu.quat_j;
   const float z = imu.quat_k;
-  return atan2f(2.0f * (w * y + x * z), 1.0f - 2.0f * (x * x + y * y));
+  return atan2f(2.0f * (w * y + x * z), 1.0f - 2.0f * (y * y + z * z));
 }
 
 float pitchRad() {
   // Finn IMU mount: sensor X is left/right between wheels, so robot pitch is
-  // rotation about sensor X. Bench-check sign before using signed pitch.
-  return sensorXRotationRad();
+  // rotation about sensor X. Batch 2 uses a run-start zero so safety checks
+  // reject tip changes, not the fixed absolute orientation of the mounted IMU.
+  const float raw_pitch = sensorXRotationRad();
+  return pitch_zero_valid ? relative_pitch_rad : raw_pitch;
 }
 
 float yawRad() {
@@ -495,11 +558,14 @@ float yawRad() {
 
 void printStatus() { //human-readable one-shot snapshot
   const long imu_age_ms = (imu.last_event_us == 0) ? -1L : static_cast<long>(imuAgeUs() / 1000U);
-  Serial.printf("status,state=%s,phase=%s,imu_initialized=%d,imu_fresh=%d,imu_age_ms=%ld,imu_address=0x%02X,imu_i2c_clock_hz=%lu,imu_events=%lu,imu_rotation_events=%lu,imu_gyro_events=%lu,imu_linear_accel_events=%lu,imu_resets=%lu,left_misses=%u,right_misses=%u,fault=%s\n",
-                stateName(), activePhaseName(), imu.initialized ? 1 : 0, isImuFresh() ? 1 : 0,
-                imu_age_ms, imu.address, static_cast<unsigned long>(imu.clock_hz),
+  const long imu_any_age_ms = (imu.last_any_event_us == 0) ? -1L : static_cast<long>(imuAnyAgeUs() / 1000U);
+  Serial.printf("status,state=%s,phase=%s,imu_initialized=%d,imu_alive=%d,imu_fresh=%d,imu_age_ms=%ld,imu_any_age_ms=%ld,imu_address=0x%02X,imu_i2c_clock_hz=%lu,imu_events=%lu,imu_rotation_events=%lu,imu_game_rotation_events=%lu,imu_gyro_events=%lu,imu_linear_accel_events=%lu,imu_resets=%lu,left_misses=%u,right_misses=%u,fault=%s\n",
+                stateName(), activePhaseName(), imu.initialized ? 1 : 0, isImuAlive() ? 1 : 0,
+                isImuFresh() ? 1 : 0,
+                imu_age_ms, imu_any_age_ms, imu.address, static_cast<unsigned long>(imu.clock_hz),
                 static_cast<unsigned long>(imu.event_count),
                 static_cast<unsigned long>(imu.rotation_event_count),
+                static_cast<unsigned long>(imu.game_rotation_event_count),
                 static_cast<unsigned long>(imu.gyro_event_count),
                 static_cast<unsigned long>(imu.linear_accel_event_count),
                 static_cast<unsigned long>(imu.reset_count),
@@ -518,12 +584,13 @@ void printTelemetry() { //one csv data row: state + both motors + imu, this is t
   const float avg_pos_rev = 0.5f * (left_delta_rev + right_delta_rev);
   const float diff_pos_rev = 0.5f * (left_delta_rev - right_delta_rev);
   // Finn IMU mount: sensor X is left/right, Y is vertical, Z is fore/aft.
-  // Confirm signs on the bench before relying on signed values.
+  // Sensor +Z points toward the rear, so robot-forward acceleration is -sensor Z.
   const float pitch_rate_rad_s = imu.gyro_x_rad_s;
   const float yaw_rate_rad_s = imu.gyro_y_rad_s;
+  const float robot_forward_accel_m_s2 = -imu.linear_accel_z_m_s2;
 
   Serial.printf(
-      "data,%lu,%s,%d,%s,%d,%lu,%lu,%.5f,%.5f,%d,%.7f,%.7f,%.5f,%.3f,%.3f,%d,%d,%.7f,%.7f,%.5f,%.3f,%.3f,%d,%d,%ld,%.7f,%.7f,%.7f,%.7f,%.5f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%d,%d,%d,%s\n",
+      "data,%lu,%s,%d,%s,%d,%lu,%lu,%.5f,%.5f,%d,%.7f,%.7f,%.5f,%.3f,%.3f,%d,%d,%.7f,%.7f,%.5f,%.3f,%.3f,%d",
       static_cast<unsigned long>(micros()),
       stateName(),
       phase_index,
@@ -546,8 +613,10 @@ void printTelemetry() { //one csv data row: state + both motors + imu, this is t
       right.torque,
       right.voltage,
       right.temperature,
-      static_cast<int>(right.fault),
-      isImuFresh() ? 1 : 0,
+      static_cast<int>(right.fault));
+  Serial.printf(
+      ",%d,%ld,%.7f,%.7f,%.7f,%.7f,%.5f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f,%.7f",
+      isImuAlive() ? 1 : 0,
       imu_age_ms,
       static_cast<double>(imu.quat_real),
       static_cast<double>(imu.quat_i),
@@ -560,10 +629,13 @@ void printTelemetry() { //one csv data row: state + both motors + imu, this is t
       static_cast<double>(imu.linear_accel_x_m_s2),
       static_cast<double>(imu.linear_accel_y_m_s2),
       static_cast<double>(imu.linear_accel_z_m_s2),
+      static_cast<double>(robot_forward_accel_m_s2),
       static_cast<double>(pitchRad()),
       static_cast<double>(pitch_rate_rad_s),
       static_cast<double>(yawRad()),
-      static_cast<double>(yaw_rate_rad_s),
+      static_cast<double>(yaw_rate_rad_s));
+  Serial.printf(
+      ",%.7f,%.7f,%.7f,%.7f,%d,%d,%d,%s\n",
       static_cast<double>(left_delta_rev),
       static_cast<double>(right_delta_rev),
       static_cast<double>(avg_pos_rev),
@@ -609,6 +681,12 @@ bool configureImuReport() { //(re)enable the 100hz imu reports
     ok = false;
   } else {
     printEvent("imu_report_enabled", "rotation_vector_100hz");
+  }
+  if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, kImuReportIntervalUs)) {
+    printEvent("imu_report_failed", "game_rotation_vector_100hz");
+    ok = false;
+  } else {
+    printEvent("imu_report_enabled", "game_rotation_vector_100hz");
   }
   if (!bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, kImuReportIntervalUs)) {
     printEvent("imu_report_failed", "gyroscope_calibrated_100hz");
@@ -666,19 +744,20 @@ bool initImuAtAddress(const uint8_t address, const bool probe_first) { //try to 
   imu.last_linear_accel_us = 0;
   imu.event_count = 0;
   imu.rotation_event_count = 0;
+  imu.game_rotation_event_count = 0;
   imu.gyro_event_count = 0;
   imu.linear_accel_event_count = 0;
   imu.other_event_count = 0;
-  Serial.printf("event,%lu,imu_initialized,address_0x%02X,rv_gyro_linear_accel_100hz\n",
+  Serial.printf("event,%lu,imu_initialized,address_0x%02X,rv_game_rv_gyro_linear_accel_100hz\n",
                 static_cast<unsigned long>(micros()), address);
   if (!waitForFirstImuSample(kImuFirstSampleTimeoutUs)) {
-    printEvent("imu_warning", "no_rotation_vector_within_2000ms");
+    printEvent("imu_warning", "no_quaternion_within_2000ms");
     imu.initialized = false;
     sh2_close();
     printEvent("imu_sh2_close", "first_sample_timeout");
     return false;
   } else {
-    printEvent("imu_first_sample", "rotation_vector_fresh");
+    printEvent("imu_first_sample", "quaternion_fresh");
   }
   return true;
 }
@@ -720,6 +799,7 @@ void serviceImu() { //drain imu events each loop, handle resets
     imu.reset_count++;
     imu.last_event_us = 0;
     imu.last_any_event_us = 0;
+    last_pitch_gyro_us = 0;
     printEvent("imu_warning", isRunning() ? "imu_reset_during_run" : "imu_reset");
     if (!configureImuReport()) {
       imu.initialized = false;
@@ -743,14 +823,35 @@ void serviceImu() { //drain imu events each loop, handle resets
       imu.quat_j = quat.j;
       imu.quat_k = quat.k;
       imu.accuracy_rad = quat.accuracy;
-      imu.last_event_us = event_us; //rotation vector is the critical freshness clock
+      imu.last_event_us = event_us; //fused attitude freshness clock
+      if (pitch_zero_valid) {
+        relative_pitch_rad = wrapPi(sensorXRotationRad() - pitch_zero_rad);
+      }
       imu.rotation_event_count++;
+    } else if (imu_event.sensorId == SH2_GAME_ROTATION_VECTOR) {
+      const auto& quat = imu_event.un.gameRotationVector;
+      imu.quat_real = quat.real;
+      imu.quat_i = quat.i;
+      imu.quat_j = quat.j;
+      imu.quat_k = quat.k;
+      imu.last_event_us = event_us; //game rotation is a valid fused attitude source
+      if (pitch_zero_valid) {
+        relative_pitch_rad = wrapPi(sensorXRotationRad() - pitch_zero_rad);
+      }
+      imu.game_rotation_event_count++;
     } else if (imu_event.sensorId == SH2_GYROSCOPE_CALIBRATED) {
       const auto& gyro = imu_event.un.gyroscope;
+      if (pitch_zero_valid && last_pitch_gyro_us != 0) {
+        const float dt_s = static_cast<float>(event_us - last_pitch_gyro_us) * 1.0e-6f;
+        if (dt_s > 0.0f && dt_s < 0.1f) {
+          relative_pitch_rad = wrapPi(relative_pitch_rad + gyro.x * dt_s);
+        }
+      }
       imu.gyro_x_rad_s = gyro.x;
       imu.gyro_y_rad_s = gyro.y;
       imu.gyro_z_rad_s = gyro.z;
       imu.last_gyro_us = event_us;
+      last_pitch_gyro_us = event_us;
       imu.gyro_event_count++;
     } else if (imu_event.sensorId == SH2_LINEAR_ACCELERATION) {
       const auto& accel = imu_event.un.linearAcceleration;
@@ -837,9 +938,15 @@ bool checkBatchElapsedLimit() {
 }
 
 bool checkLoadedSafetyLimits() {
-  if (!isImuFresh()) {
-    latchFault("imu_stale_critical");
+  if (!isImuAlive()) {
+    latchFault("imu_no_reports_critical");
     return false;
+  }
+  if (!isImuFresh() && !imu_stale_warning_active) {
+    imu_stale_warning_active = true;
+    printEvent("imu_warning", "quaternion_stale_using_gyro_pitch");
+  } else if (isImuFresh()) {
+    imu_stale_warning_active = false;
   }
 
   const float abs_pitch = fabsf(pitchRad());
@@ -974,6 +1081,15 @@ float observedAbsVelocityRevS(const BatchSegment& segment) { //watched wheel's a
   return 0.0f;
 }
 
+float observedSpinupAbsVelocityRevS(const BatchSegment& segment) {
+  if (segment.observed_wheel == WheelSelect::kAverage) {
+    const float left = static_cast<float>(fabs(left_moteus.last_result().values.velocity));
+    const float right = static_cast<float>(fabs(right_moteus.last_result().values.velocity));
+    return fmaxf(left, right);
+  }
+  return observedAbsVelocityRevS(segment);
+}
+
 float observedAbsPositionDeltaRev(const BatchSegment& segment) {
   if (segment.observed_wheel == WheelSelect::kLeft) {
     return static_cast<float>(fabs(left_moteus.last_result().values.position - active_segment_start_left_pos_rev));
@@ -1019,6 +1135,17 @@ const char* segmentEndReasonName(const SegmentEndReason reason) {
   return "unknown";
 }
 
+void zeroPitchReference(const char* event_name) {
+  pitch_zero_rad = sensorXRotationRad();
+  pitch_zero_valid = true;
+  relative_pitch_rad = 0.0f;
+  last_pitch_gyro_us = imu.last_gyro_us != 0 ? imu.last_gyro_us : micros();
+  char pitch_zero_detail[48];
+  snprintf(pitch_zero_detail, sizeof(pitch_zero_detail), "sensor_x_zero_%.1fdeg",
+           static_cast<double>(pitch_zero_rad * 180.0f / PI));
+  printEvent(event_name, pitch_zero_detail);
+}
+
 SegmentEndReason segmentCompletionReason(const BatchSegment& segment) { //exit logic for the active segment
   const uint32_t elapsed_ms = millis() - active_segment_start_ms;
   if (elapsed_ms >= segment.max_duration_ms) { //hit the time cap, always wins
@@ -1032,11 +1159,12 @@ SegmentEndReason segmentCompletionReason(const BatchSegment& segment) { //exit l
     return observedMotionReached(segment) ? SegmentEndReason::kMotionReached : SegmentEndReason::kNone;
   }
 
-  const float observed_speed = observedAbsVelocityRevS(segment);
   if (segment.mode == SegmentMode::kSpinupUntilVelocity) {
+    const float observed_speed = observedSpinupAbsVelocityRevS(segment);
     return (observed_speed >= segment.exit_abs_velocity_rev_s) ? SegmentEndReason::kSpeedReached : SegmentEndReason::kNone;
   }
   if (segment.mode == SegmentMode::kCoastUntilSlow) {
+    const float observed_speed = observedAbsVelocityRevS(segment);
     return (observed_speed <= segment.exit_abs_velocity_rev_s) ? SegmentEndReason::kSlowReached : SegmentEndReason::kNone;
   }
   return SegmentEndReason::kNone; //plain torque/stop just run to max_duration
@@ -1057,6 +1185,9 @@ void startSegment(const size_t index) { //begin a segment, stamp the start time
     active_segment_start_left_pos_rev = left_moteus.last_result().values.position;
     active_segment_start_right_pos_rev = right_moteus.last_result().values.position;
     printEvent("segment_start", active_segment.name);
+    if (strcmp(active_segment.name, "initial_stationary_noise") == 0) {
+      zeroPitchReference("imu_pitch_rezero");
+    }
   }
 }
 
@@ -1065,6 +1196,9 @@ void completeBatch() { //stop everything, mark done
   if (state == SystemState::kFault) return;
   state = SystemState::kComplete;
   active_segment_index = 0;
+  pitch_zero_valid = false;
+  relative_pitch_rad = 0.0f;
+  last_pitch_gyro_us = 0;
   last_left_command_nm = 0.0f;
   last_right_command_nm = 0.0f;
   printEvent("batch2_complete", "motors_stopped_state_complete");
@@ -1089,6 +1223,9 @@ void latchFault(const char* reason) { //emergency brake: latch + stop + log, sti
   fault_reason[sizeof(fault_reason) - 1U] = '\0';
   state = SystemState::kFault;
   sendAllStop();
+  pitch_zero_valid = false;
+  relative_pitch_rad = 0.0f;
+  last_pitch_gyro_us = 0;
   last_left_command_nm = 0.0f;
   last_right_command_nm = 0.0f;
   printEvent("failsafe", fault_reason);
@@ -1138,6 +1275,8 @@ void startBatch2() { //start the run if armed and preflight passes
   pitch_limit_active = false;
   speed_limit_active = false;
   travel_limit_active = false;
+  imu_stale_warning_active = false;
+  zeroPitchReference("imu_pitch_zero");
   state = SystemState::kRunningBatch2;
   batch_start_ms = millis();
   batch_start_left_pos_rev = left_moteus.last_result().values.position;
@@ -1157,6 +1296,9 @@ void stopAndDisarm(const char* reason) { //operator STOP -> safe idle
   state = SystemState::kSafeIdle;
   active_segment_index = 0;
   fault_reason[0] = '\0';
+  pitch_zero_valid = false;
+  relative_pitch_rad = 0.0f;
+  last_pitch_gyro_us = 0;
   printEvent("stop", reason);
 }
 
@@ -1190,6 +1332,9 @@ void handleCommand(char* line) { //dispatch a serial command
     pitch_limit_active = false;
     speed_limit_active = false;
     travel_limit_active = false;
+    pitch_zero_valid = false;
+    relative_pitch_rad = 0.0f;
+    last_pitch_gyro_us = 0;
     printEvent("armed", "awaiting_run_batch2");
   } else if (strcmp(line, "RUN BATCH2") == 0) {
     startBatch2();
@@ -1200,6 +1345,9 @@ void handleCommand(char* line) { //dispatch a serial command
       sendAllStop();
       state = SystemState::kSafeIdle;
       fault_reason[0] = '\0';
+      pitch_zero_valid = false;
+      relative_pitch_rad = 0.0f;
+      last_pitch_gyro_us = 0;
       printEvent("fault_cleared", "safe_idle");
     } else {
       printEvent("clear_ignored", "no_fault_latched");
@@ -1229,9 +1377,9 @@ void runBatchTick() { //one 100hz control step while running
   if (!isRunning()) return;
   last_control_tick_us = micros();
 
-  if (!isImuFresh()) {
+  if (!isImuAlive()) {
     imu_stale_warning_active = true;
-    latchFault("imu_stale_critical");
+    latchFault("imu_no_reports_critical");
     return;
   }
 

@@ -99,6 +99,7 @@ struct ImuState { //latest imu reading + health
   float accuracy_rad = 0.0f; //reported heading accuracy
   uint32_t event_count = 0;
   uint32_t rotation_event_count = 0;
+  uint32_t game_rotation_event_count = 0;
   uint32_t other_event_count = 0;
   uint32_t reset_count = 0; //times the chip spontaneously reset
 };
@@ -412,11 +413,12 @@ void printTelemetryHeader() { //csv schema tag + column header so the log is sel
 
 void printStatus() { //human-readable one-shot snapshot
   const long imu_age_ms = (imu.last_event_us == 0) ? -1L : static_cast<long>(imuAgeUs() / 1000U);
-  Serial.printf("status,state=%s,phase=%s,imu_initialized=%d,imu_fresh=%d,imu_age_ms=%ld,imu_address=0x%02X,imu_i2c_clock_hz=%lu,imu_events=%lu,imu_rotation_events=%lu,imu_resets=%lu,left_misses=%u,right_misses=%u,fault=%s\n",
+  Serial.printf("status,state=%s,phase=%s,imu_initialized=%d,imu_fresh=%d,imu_age_ms=%ld,imu_address=0x%02X,imu_i2c_clock_hz=%lu,imu_events=%lu,imu_rotation_events=%lu,imu_game_rotation_events=%lu,imu_resets=%lu,left_misses=%u,right_misses=%u,fault=%s\n",
                 stateName(), activePhaseName(), imu.initialized ? 1 : 0, isImuFresh() ? 1 : 0,
                 imu_age_ms, imu.address, static_cast<unsigned long>(imu.clock_hz),
                 static_cast<unsigned long>(imu.event_count),
                 static_cast<unsigned long>(imu.rotation_event_count),
+                static_cast<unsigned long>(imu.game_rotation_event_count),
                 static_cast<unsigned long>(imu.reset_count),
                 left_health.consecutive_misses, right_health.consecutive_misses,
                 fault_reason[0] ? fault_reason : "none");
@@ -489,13 +491,21 @@ bool waitForFirstImuSample(const uint32_t timeout_us) {
   return isImuFresh();
 }
 
-bool configureImuReport() { //(re)enable the 100hz rotation vector report
+bool configureImuReport() { //(re)enable the 100hz quaternion reports
+  bool ok = true;
   if (!bno08x.enableReport(SH2_ROTATION_VECTOR, kImuReportIntervalUs)) {
     printEvent("imu_report_failed", "rotation_vector_100hz");
-    return false;
+    ok = false;
+  } else {
+    printEvent("imu_report_enabled", "rotation_vector_100hz");
   }
-  printEvent("imu_report_enabled", "rotation_vector_100hz");
-  return true;
+  if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR, kImuReportIntervalUs)) {
+    printEvent("imu_report_failed", "game_rotation_vector_100hz");
+    ok = false;
+  } else {
+    printEvent("imu_report_enabled", "game_rotation_vector_100hz");
+  }
+  return ok;
 }
 
 bool initImuAtAddress(const uint8_t address, const bool probe_first) { //try to bring up the imu at one i2c addr
@@ -537,17 +547,18 @@ bool initImuAtAddress(const uint8_t address, const bool probe_first) { //try to 
   imu.last_any_event_us = 0;
   imu.event_count = 0;
   imu.rotation_event_count = 0;
+  imu.game_rotation_event_count = 0;
   imu.other_event_count = 0;
-  Serial.printf("event,%lu,imu_initialized,address_0x%02X,rotation_vector_100hz\n",
+  Serial.printf("event,%lu,imu_initialized,address_0x%02X,rv_game_rv_100hz\n",
                 static_cast<unsigned long>(micros()), address);
   if (!waitForFirstImuSample(kImuFirstSampleTimeoutUs)) {
-    printEvent("imu_warning", "no_rotation_vector_within_2000ms");
+    printEvent("imu_warning", "no_quaternion_within_2000ms");
     imu.initialized = false;
     sh2_close();
     printEvent("imu_sh2_close", "first_sample_timeout");
     return false;
   } else {
-    printEvent("imu_first_sample", "rotation_vector_fresh");
+    printEvent("imu_first_sample", "quaternion_fresh");
   }
   return true;
 }
@@ -614,6 +625,14 @@ void serviceImu() { //drain imu events each loop, handle resets
       imu.accuracy_rad = quat.accuracy;
       imu.last_event_us = event_us; //stamp freshness
       imu.rotation_event_count++;
+    } else if (imu_event.sensorId == SH2_GAME_ROTATION_VECTOR) {
+      const auto& quat = imu_event.un.gameRotationVector;
+      imu.quat_real = quat.real;
+      imu.quat_i = quat.i;
+      imu.quat_j = quat.j;
+      imu.quat_k = quat.k;
+      imu.last_event_us = event_us; //game rotation is a valid quaternion freshness source
+      imu.game_rotation_event_count++;
     } else {
       if (imu.other_event_count < kMaxIgnoredImuEventPrints) {
         char detail[64];
