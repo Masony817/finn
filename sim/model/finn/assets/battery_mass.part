@@ -1,12 +1,12 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "693fdd967f0a118d49837b5b",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "9019e3d2a6cfc96b43e2014f",
     "fullConfiguration": "default",
-    "id": "MZSj+uHekA86iYSmj",
+    "id": "MCFanmbF57j4FLT+U",
     "isStandardContent": false,
-    "name": "dcdc-converter-bracket <1>",
+    "name": "battery-mass <1>",
     "partId": "JHD",
     "suppressed": false,
     "type": "Part"

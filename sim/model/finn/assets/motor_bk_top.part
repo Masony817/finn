@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "87c1be3b4e18d7a848d86b52",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "5fde9b97967f8ac4b9acb307",
     "fullConfiguration": "default",
-    "id": "MmORzngbdvrC5yvCT",
+    "id": "MvsPnQF9yoWtejBW4",
     "isStandardContent": false,
-    "name": "mast_bracket <2>",
-    "partId": "JFD",
+    "name": "motor-bk-top <1>",
+    "partId": "JIH",
     "suppressed": false,
     "type": "Part"
 }

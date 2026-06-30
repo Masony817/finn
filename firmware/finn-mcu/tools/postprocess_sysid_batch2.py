@@ -1099,17 +1099,17 @@ def mujoco_params(
             "solref": None,
             "solimp": None,
             "confidence": loss_decomp.get("confidence", "insufficient"),
-            "notes": ["solref_and_solimp_to_be_identified_in_batch3"],
+            "notes": ["solref_and_solimp_deferred_to_controlled_validation"],
         },
         "readiness": {
-            "batch3_can_proceed": all(
+            "controlled_validation_can_proceed": all(
                 [
                     radius_m is not None,
                     yaw_width_m is not None,
                     b1.get("left", {}).get("frictionloss_nm") is not None,
                 ]
             ),
-            "open_params_for_batch3": open_params,
+            "open_params_for_controlled_validation": open_params,
         },
     }
 
@@ -1182,7 +1182,9 @@ def analyze_run(
         warnings.append(f"unexpected_or_missing_schema_{schema}")
     if not rows:
         warnings.append("no_telemetry_rows")
-    missing_physical = [key for key, value in phys.items() if value is None and key != "gantry_mass_kg"]
+    missing_physical = [
+        key for key, value in phys.items() if value is None and key != "gantry_mass_kg"
+    ]
     warnings.extend(f"missing_physical_input_{key}" for key in missing_physical)
 
     duration = ((rows[-1]["t_us"] - rows[0]["t_us"]) / 1_000_000.0) if len(rows) >= 2 else 0.0
@@ -1350,7 +1352,9 @@ def analyze_run(
             "saturation_flags": {
                 "pitch_limit_rows": int(sum(_safe_int(row.get("pitch_limit", 0)) for row in rows)),
                 "speed_limit_rows": int(sum(_safe_int(row.get("speed_limit", 0)) for row in rows)),
-                "travel_limit_rows": int(sum(_safe_int(row.get("travel_limit", 0)) for row in rows)),
+                "travel_limit_rows": int(
+                    sum(_safe_int(row.get("travel_limit", 0)) for row in rows)
+                ),
                 "max_command_near_hard_cap": validated_loaded_torque >= 0.249,
             },
             "actuator_cross_check": {
@@ -1511,7 +1515,7 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
             + " ("
             + f"{mujoco_geo.get('effective_track_width_m', {}).get('confidence', 'insufficient')})",
             "",
-            "### Contact (batch 2 lower bounds; solref/solimp deferred to batch 3)",
+            "### Contact (batch 2 lower bounds; solref/solimp deferred to controlled validation)",
             "",
             "- slide_friction_mu_lower_bound: "
             f"{mujoco_contact.get('slide_friction_mu_lower_bound')}",
@@ -1519,9 +1523,10 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
             f"- solref: {mujoco_contact.get('solref')}",
             f"- solimp: {mujoco_contact.get('solimp')}",
             "",
-            f"Batch 3 can proceed: `{mujoco_readiness.get('batch3_can_proceed')}`",
-            "Open params for batch 3: "
-            + ", ".join(mujoco_readiness.get("open_params_for_batch3") or []),
+            "Controlled validation can proceed: "
+            f"`{mujoco_readiness.get('controlled_validation_can_proceed')}`",
+            "Open params for controlled validation: "
+            + ", ".join(mujoco_readiness.get("open_params_for_controlled_validation") or []),
         ]
     )
 

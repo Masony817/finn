@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "e25fa640ddc33cfb56e4c1ff",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "5fde9b97967f8ac4b9acb307",
     "fullConfiguration": "default",
-    "id": "MGHJtahcfqf+U5/5M",
+    "id": "MAlYzcY2MgbEFp6pd",
     "isStandardContent": false,
-    "name": "right_motor_shaft <1>",
-    "partId": "JND",
+    "name": "motor-bk-bottom <1>",
+    "partId": "JJD",
     "suppressed": false,
     "type": "Part"
 }

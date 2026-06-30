@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "7a6bb543b74c81d62b32137f",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "27a6ba580456a8ea4f5cf0a8",
     "fullConfiguration": "default",
-    "id": "MpeGADbrDIG4/0jLN",
+    "id": "MCGhbWIxdW8ANGfGd",
     "isStandardContent": false,
-    "name": "base_rail <1>",
-    "partId": "JFD",
+    "name": "battery_adapter <1>",
+    "partId": "JHD",
     "suppressed": false,
     "type": "Part"
 }

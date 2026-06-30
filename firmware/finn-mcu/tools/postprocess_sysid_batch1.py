@@ -23,7 +23,7 @@ SUSTAINED_MOTION_MIN_SAMPLES = 3
 MIN_DYNAMIC_SPEED_RAD_S = 0.05
 RAD_PER_REV = 2.0 * math.pi
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_ROBOT_XML = REPO_ROOT / "sim" / "model" / "finn_robot.xml"
+DEFAULT_ROBOT_XML = REPO_ROOT / "sim" / "model" / "finn" / "finn_robot.xml"
 DEFAULT_MEASUREMENTS = REPO_ROOT / "sim" / "config" / "finn_measurements.yaml"
 
 NUMERIC_FIELDS = {

@@ -23,8 +23,8 @@ RAD_PER_REV = 2.0 * math.pi
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SYSID_ROOT = Path("logs/finn-mcu/sysid")
 DEFAULT_MEASUREMENTS = Path("sim/config/finn_measurements.yaml")
-DEFAULT_ROBOT = Path("sim/model/finn_robot.xml")
-DEFAULT_SCENE = Path("sim/model/scene.xml")
+DEFAULT_ROBOT = Path("sim/model/finn/finn_robot.xml")
+DEFAULT_SCENE = Path("sim/model/finn/scene.xml")
 DEFAULT_CONFIG = Path("sim/config/mujoco_postprocess.yaml")
 DEFAULT_CONTACT_FRICTION = [1.0, 0.02, 0.002]
 DEFAULT_CONTACT_SOLREF = [0.02, 1.0]
@@ -493,7 +493,10 @@ def build_seeded_measurements(
         DEFAULT_CONTACT_FRICTION,
         "slide torsional rolling",
         "estimated",
-        "Provisional seed default. Batch 2 only gives lower bounds; tune with Batch 3 replay.",
+        (
+            "Provisional seed default. Batch 2 only gives lower bounds; tune with "
+            "controlled LQR validation."
+        ),
     )
     tire["solref"] = provenance(
         DEFAULT_CONTACT_SOLREF,
@@ -871,9 +874,11 @@ def provenance(value: Any, unit: str, source: str, notes: str | None = None) -> 
 def missing_assets_message(missing_assets: list[Path]) -> str:
     first = ", ".join(path.name for path in missing_assets[:5])
     suffix = "" if len(missing_assets) <= 5 else f", ... ({len(missing_assets)} total)"
+    parents = {path.parent for path in missing_assets}
+    location = str(next(iter(parents))) if len(parents) == 1 else "mesh asset directories"
     return (
         "MuJoCo compile validation requested, but STL mesh assets are missing under "
-        f"sim/model/assets: {first}{suffix}. Regenerate/export the Onshape-to-Robot "
+        f"{location}: {first}{suffix}. Regenerate/export the Onshape-to-Robot "
         "STL assets before running --validate-mujoco or --replay-batch2."
     )
 

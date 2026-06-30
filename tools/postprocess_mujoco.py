@@ -6,6 +6,7 @@ import argparse
 import copy
 import hashlib
 import math
+import os
 import re
 import sys
 import tempfile
@@ -76,8 +77,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a standalone MuJoCo sim XML from an Onshape-to-Robot export."
     )
-    parser.add_argument("--robot", type=Path, default=Path("sim/model/finn_robot.xml"))
-    parser.add_argument("--scene", type=Path, default=Path("sim/model/scene.xml"))
+    parser.add_argument("--robot", type=Path, default=Path("sim/model/finn/finn_robot.xml"))
+    parser.add_argument("--scene", type=Path, default=Path("sim/model/finn/scene.xml"))
     parser.add_argument("--config", type=Path, default=Path("sim/config/mujoco_postprocess.yaml"))
     parser.add_argument(
         "--measurements", type=Path, default=Path("sim/config/finn_measurements.yaml")
@@ -162,7 +163,14 @@ def postprocess(
         apply_actuators(robot_tree.getroot(), config, inspection, lab_values, report)
         apply_collisions(robot_tree.getroot(), config, inspection, lab_values, report)
         apply_sensors(robot_tree.getroot(), config, inspection, wheel_selectors, report)
-        assemble_scene(robot_tree.getroot(), scene_tree.getroot(), config, report)
+        assemble_scene(
+            robot_tree.getroot(),
+            scene_tree.getroot(),
+            config,
+            report,
+            robot_path=robot_path,
+            out_path=out_path,
+        )
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = write_temp_xml(robot_tree, out_path)
@@ -799,6 +807,9 @@ def assemble_scene(
     scene_root: ET.Element,
     config: dict[str, Any],
     report: dict[str, Any],
+    *,
+    robot_path: Path,
+    out_path: Path,
 ) -> None:
     pipeline_cfg = config.get("pipeline", {})
     robot_root.set("model", str(pipeline_cfg.get("output_model", "finn_sim")))
@@ -807,7 +818,9 @@ def assemble_scene(
     if compiler is None:
         compiler = ET.Element("compiler")
         robot_root.insert(0, compiler)
-    compiler.set("meshdir", str(pipeline_cfg.get("compiler_meshdir", "../model/assets")))
+    meshdir = resolve_output_meshdir(robot_root, robot_path, out_path, pipeline_cfg)
+    compiler.set("meshdir", meshdir)
+    report["changes"]["scene"]["compiler_meshdir"] = meshdir
 
     scene_cfg = config.get("scene", {})
     if scene_cfg.get("merge_visual", True):
@@ -836,6 +849,31 @@ def assemble_scene(
                 robot_worldbody.insert(0, copy.deepcopy(child))
                 merged += 1
         report["changes"]["scene"]["worldbody_children_merged"] = merged
+
+
+def resolve_output_meshdir(
+    robot_root: ET.Element,
+    robot_path: Path,
+    out_path: Path,
+    pipeline_cfg: dict[str, Any],
+) -> str:
+    configured = pipeline_cfg.get("compiler_meshdir", "auto")
+    if configured not in (None, "", "auto"):
+        return str(configured)
+
+    source_compiler = robot_root.find("compiler")
+    source_meshdir = Path(
+        source_compiler.get("meshdir", "assets") if source_compiler is not None else "assets"
+    )
+    if not source_meshdir.is_absolute():
+        source_meshdir = robot_path.parent / source_meshdir
+
+    source_meshdir = source_meshdir.resolve()
+    output_dir = out_path.parent.resolve()
+    try:
+        return os.path.relpath(source_meshdir, output_dir)
+    except ValueError:
+        return str(source_meshdir)
 
 
 def validate_mujoco(

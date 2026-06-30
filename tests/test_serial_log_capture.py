@@ -165,6 +165,62 @@ def test_run_capture_detects_port_before_upload(monkeypatch):
     assert calls == [("sysid_batch1_wheels_offground", "/dev/cu.usbmodem123")]
 
 
+def test_line_has_run_marker_accepts_running_sysid_batches():
+    assert slc.line_has_run_marker("event,1,segment_start,running_batch2,straight")
+    assert slc.line_has_run_marker("data,1,running_batch1,0,phase,1")
+    assert slc.line_has_run_marker("data,1,running_batch2,0,phase,1")
+    assert not slc.line_has_run_marker("data,1,safe_idle,-1,idle,0")
+
+
+def test_run_capture_line_callback_preserves_capture(monkeypatch, tmp_path: Path):
+    fake_fd = 123
+    chunks = [
+        b"schema,batch2_v2\n",
+        b"data,t_us,state,phase_index,phase,armed,left_cmd_nm,right_cmd_nm\n"
+        b"event,1,batch2_complete,complete,motors_stopped_state_complete\n",
+    ]
+    args = slc.build_parser(default_log_root=tmp_path, default_run_name="batch_2").parse_args(
+        [
+            "--port",
+            "/dev/fake",
+            "--pass-marker",
+            ",batch2_complete,",
+            "--fail-marker",
+            ",failsafe,",
+            "--timeout-s",
+            "2",
+        ]
+    )
+    seen: list[str] = []
+
+    def fake_select(read_fds, write_fds, error_fds, timeout):
+        del write_fds, error_fds, timeout
+        return ([fake_fd] if chunks and fake_fd in read_fds else [], [], [])
+
+    def fake_read(fd: int, size: int) -> bytes:
+        del fd, size
+        return chunks.pop(0)
+
+    monkeypatch.setattr(slc.os, "open", lambda path, flags: fake_fd)
+    monkeypatch.setattr(slc.os, "read", fake_read)
+    monkeypatch.setattr(slc.os, "close", lambda fd: None)
+    monkeypatch.setattr(slc, "configure_serial", lambda fd, baud: None)
+    monkeypatch.setattr(slc.select, "select", fake_select)
+
+    rc = slc.run_capture(args, line_callback=seen.append)
+
+    assert rc == 0
+    assert seen == [
+        "schema,batch2_v2",
+        "data,t_us,state,phase_index,phase,armed,left_cmd_nm,right_cmd_nm",
+        "event,1,batch2_complete,complete,motors_stopped_state_complete",
+    ]
+    final_dirs = list((tmp_path / "batch_2_pass").iterdir())
+    assert len(final_dirs) == 1
+    assert "schema,batch2_v2\n" in (final_dirs[0] / "telemetry.csv").read_text()
+    assert "batch2_complete" in (final_dirs[0] / "events.log").read_text()
+
+
 def test_batch1_postprocess_skips_schema_line(tmp_path: Path):
     telemetry = tmp_path / "telemetry.csv"
     telemetry.write_text(
@@ -270,11 +326,11 @@ def test_batch1_breakaway_detection_excludes_anomalous_direction():
 
 def test_batch1_extracts_cad_axial_inertia_from_robot_xml():
     inertias = batch1_post.cad_axial_inertias_from_robot_xml(
-        ROOT / "sim" / "model" / "finn_robot.xml"
+        ROOT / "sim" / "model" / "finn" / "finn_robot.xml"
     )
 
-    assert math.isclose(inertias["left"], 0.00587115, rel_tol=1e-6)
-    assert math.isclose(inertias["right"], 0.00587115, rel_tol=1e-6)
+    assert math.isclose(inertias["left"], 0.00560974, rel_tol=1e-6)
+    assert math.isclose(inertias["right"], 0.00560974, rel_tol=1e-6)
 
 
 def test_batch1_single_cog_hop_is_not_sustained_motion():
@@ -1096,11 +1152,11 @@ def test_mujoco_params_assembles_from_priors_and_batch2(tmp_path: Path):
     assert result["contact"]["rolling_resistance_coeff"] == 0.015
     assert result["contact"]["solref"] is None
     assert result["contact"]["solimp"] is None
-    assert result["readiness"]["batch3_can_proceed"] is True
-    assert "contact_solref" in result["readiness"]["open_params_for_batch3"]
+    assert result["readiness"]["controlled_validation_can_proceed"] is True
+    assert "contact_solref" in result["readiness"]["open_params_for_controlled_validation"]
 
 
-def test_mujoco_params_batch3_cannot_proceed_without_radius():
+def test_mujoco_params_controlled_validation_cannot_proceed_without_radius():
     b1_priors = batch2_post.extract_batch1_priors(_make_batch1_priors_dict())
     radius_est = {"radius_m": None, "confidence": "insufficient", "notes": []}
     loss_decomp = {
@@ -1115,8 +1171,8 @@ def test_mujoco_params_batch3_cannot_proceed_without_radius():
 
     result = batch2_post.mujoco_params(b1_priors, radius_est, loss_decomp, yaw, traction, phys)
 
-    assert result["readiness"]["batch3_can_proceed"] is False
-    assert "loaded_wheel_radius_m" in result["readiness"]["open_params_for_batch3"]
+    assert result["readiness"]["controlled_validation_can_proceed"] is False
+    assert "loaded_wheel_radius_m" in result["readiness"]["open_params_for_controlled_validation"]
 
 
 def test_lqr_readiness_has_batch2_schema_false_for_wrong_schema(tmp_path: Path):

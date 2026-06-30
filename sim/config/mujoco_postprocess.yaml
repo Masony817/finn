@@ -2,7 +2,7 @@ schema_version: 1
 
 pipeline:
   output_model: finn_sim
-  compiler_meshdir: ../model/assets
+  compiler_meshdir: auto
 
 root_body:
   source_name: base_2

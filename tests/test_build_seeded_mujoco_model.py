@@ -250,6 +250,7 @@ def test_preflight_mesh_assets_reports_missing_stls(tmp_path: Path):
 
     assert missing == [tmp_path / "assets" / "missing.stl"]
     assert "missing.stl" in bsm.missing_assets_message(missing)
+    assert str(tmp_path / "assets") in bsm.missing_assets_message(missing)
 
 
 def test_cli_help_exits_cleanly(capsys):
@@ -270,8 +271,8 @@ def test_report_only_writes_bundle_and_does_not_write_model(tmp_path: Path):
     args = Namespace(
         sysid_root=sysid,
         measurements=measurements,
-        robot=ROOT / "sim/model/finn_robot.xml",
-        scene=ROOT / "sim/model/scene.xml",
+        robot=ROOT / "sim/model/finn/finn_robot.xml",
+        scene=ROOT / "sim/model/finn/scene.xml",
         config=ROOT / "sim/config/mujoco_postprocess.yaml",
         out_dir=out_dir,
         auto_select_latest=1,

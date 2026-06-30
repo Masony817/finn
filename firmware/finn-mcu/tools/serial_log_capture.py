@@ -17,7 +17,7 @@ import sys
 import termios
 import time
 import tty
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TextIO
 
@@ -254,7 +254,7 @@ def classify_line(line: str, current_status: str, args: argparse.Namespace) -> s
 
 
 def line_has_run_marker(line: str) -> bool:
-    return ",segment_start," in line or (line.startswith("data,") and ",running_batch1," in line)
+    return ",segment_start," in line or (line.startswith("data,") and ",running_batch" in line)
 
 
 def terminal_status_line(status: str) -> str:
@@ -278,7 +278,10 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def run_capture(args: argparse.Namespace) -> int:
+def run_capture(
+    args: argparse.Namespace,
+    line_callback: Callable[[str], None] | None = None,
+) -> int:
     args = normalize_args(args)
     if args.upload_env:
         upload_port = args.port or find_serial_port()
@@ -395,6 +398,8 @@ def run_capture(args: argparse.Namespace) -> int:
                             line_buffer.clear()
                             print_teensy(line, args)
                             write_line(line, raw_file, telemetry_file, events_file, args)
+                            if line_callback:
+                                line_callback(line)
 
                             if not armed_seen and contains_any(line, (",armed,",)):
                                 armed_seen = True
@@ -431,6 +436,8 @@ def run_capture(args: argparse.Namespace) -> int:
             if line_buffer:
                 line = line_buffer.decode("utf-8", errors="replace")
                 write_line(line, raw_file, telemetry_file, events_file, args)
+                if line_callback:
+                    line_callback(line)
 
     finally:
         signal.signal(signal.SIGINT, old_sigint)

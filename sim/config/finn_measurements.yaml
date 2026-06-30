@@ -43,7 +43,7 @@ robot:
     value: 0.517
     unit: m
     source: cad
-    notes: Distance between left and right wheel-center body origins in sim/model/finn_robot.xml.
+    notes: Distance between left and right wheel-center body origins in sim/model/finn/finn_robot.xml.
   com_fore_aft_m:
     value: -0.00623145
     unit: m

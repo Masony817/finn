@@ -1,12 +1,12 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "e25fa640ddc33cfb56e4c1ff",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "84545ff7c665796a80ea723a",
     "fullConfiguration": "default",
-    "id": "MdU9Lj57u6Bcvkdwo",
+    "id": "MUuvYtppa78LOnoAs",
     "isStandardContent": false,
-    "name": "left_motor_shaft <1>",
+    "name": "5b-wago-bracket <1>",
     "partId": "JHD",
     "suppressed": false,
     "type": "Part"

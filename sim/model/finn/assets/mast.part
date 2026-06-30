@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "53c530a633bdc262bd74b411",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "291cd495cdce89b32e1e7763",
     "fullConfiguration": "default",
-    "id": "Mf0az/FhaULEvf8sR",
+    "id": "M3nSrEyRmj2Z17/Zl",
     "isStandardContent": false,
-    "name": "motues-bracket <1>",
-    "partId": "JPD",
+    "name": "mast <1>",
+    "partId": "JFD",
     "suppressed": false,
     "type": "Part"
 }

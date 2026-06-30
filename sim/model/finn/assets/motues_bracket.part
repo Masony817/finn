@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ed1c90944582329b3a0c4b53",
-    "documentMicroversion": "40761ba3b6c81afe15fab13f",
-    "elementId": "54be77b04f4b5ba2056d0b73",
+    "documentMicroversion": "26b0f0165fcf4b8334111481",
+    "elementId": "53c530a633bdc262bd74b411",
     "fullConfiguration": "default",
-    "id": "MA9BfHD1rkbZpOZMO",
+    "id": "Mf0az/FhaULEvf8sR",
     "isStandardContent": false,
-    "name": "motor-tire <1>",
-    "partId": "JcD",
+    "name": "motues-bracket <1>",
+    "partId": "JPD",
     "suppressed": false,
     "type": "Part"
 }

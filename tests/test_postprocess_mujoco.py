@@ -23,7 +23,7 @@ BASE_CONFIG = {
     "schema_version": 1,
     "pipeline": {
         "output_model": "finn_sim_test",
-        "compiler_meshdir": str(ROOT / "sim" / "model" / "assets"),
+        "compiler_meshdir": "auto",
     },
     "root_body": {
         "source_name": "base_2",
@@ -114,7 +114,7 @@ def write_yaml(path: Path, data):
 
 
 def test_inspects_current_export():
-    tree = ppm.load_xml(ROOT / "sim" / "model" / "finn_robot.xml")
+    tree = ppm.load_xml(ROOT / "sim" / "model" / "finn" / "finn_robot.xml")
     selectors = ppm.parse_wheel_selectors(BASE_CONFIG)
     inspection = ppm.inspect_robot(tree.getroot(), BASE_CONFIG, selectors)
 
@@ -137,8 +137,8 @@ def test_strict_mode_fails_closed_on_todo_measurements(tmp_path):
     write_yaml(measurements_path, bad_measurements)
 
     ok, report = ppm.postprocess(
-        robot_path=ROOT / "sim" / "model" / "finn_robot.xml",
-        scene_path=ROOT / "sim" / "model" / "scene.xml",
+        robot_path=ROOT / "sim" / "model" / "finn" / "finn_robot.xml",
+        scene_path=ROOT / "sim" / "model" / "finn" / "scene.xml",
         config_path=config_path,
         measurements_path=measurements_path,
         out_path=out_path,
@@ -162,8 +162,8 @@ def test_postprocesses_xml_without_guessing_measurements(tmp_path):
     write_yaml(measurements_path, MEASUREMENTS)
 
     ok, report = ppm.postprocess(
-        robot_path=ROOT / "sim" / "model" / "finn_robot.xml",
-        scene_path=ROOT / "sim" / "model" / "scene.xml",
+        robot_path=ROOT / "sim" / "model" / "finn" / "finn_robot.xml",
+        scene_path=ROOT / "sim" / "model" / "finn" / "scene.xml",
         config_path=config_path,
         measurements_path=measurements_path,
         out_path=out_path,
@@ -224,7 +224,36 @@ def test_postprocesses_xml_without_guessing_measurements(tmp_path):
     } <= sensor_names
 
 
-_MESH_ASSETS_PRESENT = (ROOT / "sim" / "model" / "assets" / "motues_bracket.stl").exists()
+def test_auto_meshdir_follows_nested_export_layout(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    measurements_path = tmp_path / "measurements.yaml"
+    out_path = tmp_path / "generated" / "seeded" / "latest" / "finn.seeded.sim.xml"
+    report_path = tmp_path / "report.md"
+    write_yaml(config_path, BASE_CONFIG)
+    write_yaml(measurements_path, MEASUREMENTS)
+
+    ok, report = ppm.postprocess(
+        robot_path=ROOT / "sim" / "model" / "finn" / "finn_robot.xml",
+        scene_path=ROOT / "sim" / "model" / "finn" / "scene.xml",
+        config_path=config_path,
+        measurements_path=measurements_path,
+        out_path=out_path,
+        report_path=report_path,
+        strict=True,
+        skip_mujoco_validation=True,
+    )
+
+    assert ok, report["errors"]
+    root = ET.parse(out_path).getroot()
+    meshdir = root.find("compiler").get("meshdir")
+    resolved = (out_path.parent / meshdir).resolve()
+    assert resolved == (ROOT / "sim" / "model" / "finn" / "assets").resolve()
+    assert report["changes"]["scene"]["compiler_meshdir"] == meshdir
+
+
+_MESH_ASSETS_PRESENT = (
+    ROOT / "sim" / "model" / "finn" / "assets" / "motues_bracket.stl"
+).exists()
 
 
 @pytest.mark.skipif(
@@ -241,8 +270,8 @@ def test_generated_xml_compiles_with_mujoco(tmp_path):
     write_yaml(measurements_path, MEASUREMENTS)
 
     ok, report = ppm.postprocess(
-        robot_path=ROOT / "sim" / "model" / "finn_robot.xml",
-        scene_path=ROOT / "sim" / "model" / "scene.xml",
+        robot_path=ROOT / "sim" / "model" / "finn" / "finn_robot.xml",
+        scene_path=ROOT / "sim" / "model" / "finn" / "scene.xml",
         config_path=config_path,
         measurements_path=measurements_path,
         out_path=out_path,
