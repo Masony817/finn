@@ -1,0 +1,72 @@
+{
+  "checks": {
+    "compile": "ok",
+    "nbody": 4,
+    "njnt": 3,
+    "nsensor": 9,
+    "nu": 2,
+    "scenarios": {
+      "equal_wheel_forward": {
+        "ctrl": [
+          0.05,
+          0.05
+        ],
+        "qpos_norm": 1.0008354736625733,
+        "qvel_norm": 0.08167473477524184,
+        "steps": 80
+      },
+      "left_impulse": {
+        "ctrl": [
+          0.05,
+          0.0
+        ],
+        "qpos_norm": 1.0008151701221057,
+        "qvel_norm": 0.04576040087843951,
+        "steps": 40
+      },
+      "opposite_wheel_yaw": {
+        "ctrl": [
+          0.05,
+          -0.05
+        ],
+        "qpos_norm": 1.0008385903224049,
+        "qvel_norm": 0.08527562447436896,
+        "steps": 80
+      },
+      "right_impulse": {
+        "ctrl": [
+          0.0,
+          0.05
+        ],
+        "qpos_norm": 1.0008151697452863,
+        "qvel_norm": 0.045746626234539824,
+        "steps": 40
+      },
+      "zero_control_settle": {
+        "ctrl": [
+          0.0,
+          0.0
+        ],
+        "qpos_norm": 1.0008265442031015,
+        "qvel_norm": 0.05351447453519983,
+        "steps": 50
+      }
+    }
+  },
+  "errors": [],
+  "mesh_assets": {
+    "missing": [],
+    "status": "ok"
+  },
+  "model_xml": "sim/generated/seeded/latest/finn.seeded.sim.xml",
+  "mujoco_report": "sim/generated/seeded/latest/finn.seeded.sim.report.md",
+  "onboard_replay_scope": "onboard-signal validation only; this does not validate world pose, absolute slip, endpoint error, or closed-loop LQR transfer",
+  "postprocess": {
+    "report": "sim/generated/seeded/latest/finn.seeded.sim.report.md",
+    "skipped_internal_mujoco_validation": false,
+    "status": "ok",
+    "strict": false
+  },
+  "status": "ok",
+  "warnings": []
+}

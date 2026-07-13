@@ -104,10 +104,20 @@ logs/
 # Slicer output
 *.gcode
 *.3mf.gcode
+# Finn's reference collision/visual meshes are small and committed so the sim
+# works on a fresh clone. Keep them despite the blanket *.stl ignore above.
+!sim/model/finn/assets/*.stl
 
 # ---- Sim / robotics artifacts ----
-# Generated URDFs, meshes pulled by onshape-to-robot, MuJoCo caches
-sim/generated/
+# Generated URDFs, meshes pulled by onshape-to-robot, MuJoCo caches.
+# Generated sim output is disposable EXCEPT the committed seed-model bundle that
+# run_lqr_sim.py and the MuJoCo tools load by default -- keep that one subtree so
+# the sim runs on a fresh clone. Use single-level `/*` globs (not `/**`) so git
+# can re-include the nested `latest/` path.
+sim/generated/*
+!sim/generated/seeded
+sim/generated/seeded/*
+!sim/generated/seeded/latest
 urdf/generated/
 *.mjb            # MuJoCo binary model cache
 mujoco_log.txt

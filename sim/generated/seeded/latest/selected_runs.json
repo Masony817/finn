@@ -1,0 +1,42 @@
+{
+  "batch1": [
+    {
+      "derived": "logs/finn-mcu/sysid/batch_1_pass/20260615_150912/postprocess/derived.yaml",
+      "duration_s": 136.076248,
+      "rows": 13136,
+      "run_dir": "logs/finn-mcu/sysid/batch_1_pass/20260615_150912"
+    },
+    {
+      "derived": "logs/finn-mcu/sysid/batch_1_pass/20260620_144630/postprocess/derived.yaml",
+      "duration_s": 134.145014,
+      "rows": 12941,
+      "run_dir": "logs/finn-mcu/sysid/batch_1_pass/20260620_144630"
+    },
+    {
+      "derived": "logs/finn-mcu/sysid/batch_1_pass/20260621_131252/postprocess/derived.yaml",
+      "duration_s": 145.519528,
+      "rows": 14363,
+      "run_dir": "logs/finn-mcu/sysid/batch_1_pass/20260621_131252"
+    }
+  ],
+  "batch2": [
+    {
+      "derived": "logs/finn-mcu/sysid/batch_2_pass/20260626_140757/postprocess/derived.yaml",
+      "duration_s": 378.44495,
+      "rows": 14647,
+      "run_dir": "logs/finn-mcu/sysid/batch_2_pass/20260626_140757"
+    },
+    {
+      "derived": "logs/finn-mcu/sysid/batch_2_pass/20260626_141541/postprocess/derived.yaml",
+      "duration_s": 202.137841,
+      "rows": 13709,
+      "run_dir": "logs/finn-mcu/sysid/batch_2_pass/20260626_141541"
+    },
+    {
+      "derived": "logs/finn-mcu/sysid/batch_2_pass/20260626_142027/postprocess/derived.yaml",
+      "duration_s": 208.080939,
+      "rows": 14018,
+      "run_dir": "logs/finn-mcu/sysid/batch_2_pass/20260626_142027"
+    }
+  ]
+}
