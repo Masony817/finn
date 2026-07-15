@@ -1,8 +1,8 @@
 # FINN
 
-**FINN** is a self-balancing, two-wheeled robot — an open hardware/software
+**FINN** is a self-balancing, two-wheeled humanoid style robot. The current state is an open hardware/software
 platform for balance control, system identification, and sim-to-real work. This
-repo holds everything for the robot: Teensy firmware, a system-ID pipeline that
+repo holds everything for the robot: firmware, a system-ID pipeline that
 turns bench measurements into a physically-grounded MuJoCo model, and a MuJoCo
 sim with a first LQR balance controller.
 
@@ -10,14 +10,14 @@ Status: early and under active solo development. Interfaces move fast and the
 controllers are sim-validated, not yet hardware-tuned (see
 [Status & limitations](#status--limitations)). If you're building a similar
 two-wheeler or reusing the control/sysid tooling, it should be a useful
-starting point — issues and questions are welcome.
+starting point - hopefully. Issues and questions are more than welcome.
 
 Licensed under [Apache 2.0](LICENSE).
 
-## Repository layout
+## Repository layout - under development and active changes
 
 ```
-firmware/finn-mcu/   Teensy 4.1 firmware (PlatformIO) + moteus motor control,
+firmware/finn-mcu/   Teensy 4.1 firmware (PlatformIO) + MJBots Moteus motor control,
                      including the on-robot system-ID sketches and capture tools
 sim/
   model/finn/        Hand-authored MuJoCo model, meshes (STL), and scene
