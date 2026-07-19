@@ -1,0 +1,4 @@
+interface:
+  display_name: "Finn Gap Review"
+  short_description: "Interpret Finn sim-to-real gap evidence"
+  default_prompt: "Use $finn-gap-review to review the latest Scopik gap artifacts and recommend the next model change."

@@ -40,11 +40,52 @@ uv run python tools/check_env.py        # verify the toolchain imports
 uv run python tools/run_lqr_sim.py      # run the LQR balance sim
 ```
 
+To watch the closed-loop controller balance Finn in real time on macOS, run
+the same simulation through MuJoCo's `mjpython` launcher. The isolated
+Homebrew-Python environment is intentional: `mjpython` requires a framework
+Python, while uv's standalone Python does not expose the shared library it
+needs.
+
+```bash
+uv run --isolated --python /opt/homebrew/bin/python3 \
+  mjpython tools/run_lqr_sim.py --viewer --duration-s 30
+```
+
+On Linux, use `uv run python tools/run_lqr_sim.py --viewer --duration-s 30`.
+Closing the viewer stops the rollout and still writes the partial validation
+bundle to `logs/lqr_sim/<ts>/`.
+
+Motor calibration utilities are optional because their Qt GUI dependencies are
+large. Install them only on machines that talk to the hardware:
+
+```bash
+uv sync --extra dev --extra hardware
+```
+
 `run_lqr_sim.py` loads the committed seed model at
 `sim/generated/seeded/latest/finn.seeded.sim.xml`, linearizes the balance
 dynamics, designs a discrete LQR gain, and runs a closed-loop MuJoCo rollout.
 It writes a timeseries CSV, a JSON report, and a plot to `logs/lqr_sim/<ts>/`.
+By default it derives the stationary balance trim from the model's axle-to-COM
+offset and uses a slower position outer loop to prevent accumulated wheel creep.
+Override the trim with `--target-pitch-rad`, or disable position hold with
+`--position-hold-kp-s 0`, when testing the inner balance loop in isolation.
 See `--help` for tuning knobs (Q/R weights, initial pitch, duration).
+
+## Sim-to-real gap profiling
+
+[`packages/scopik`](packages/scopik) replays a recorded Finn run through the
+seeded MuJoCo model, compares signals phase by phase, and writes deterministic
+bias/RMS/gain/lag diagnostics alongside a Rerun dashboard:
+
+```bash
+uv run scopik gap --profile config/viz/finn.yaml \
+  --run logs/finn-mcu/sysid/batch_2_pass/<timestamp>
+```
+
+Use the repo's `finn-gap-review` agent skill after a run when you want a
+physics-grounded brief that connects those measurements to the next model
+parameter or validation check.
 
 ## From robot to model: the system-ID pipeline
 

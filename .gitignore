@@ -68,6 +68,7 @@ logs/
 *.hdf5
 *.tfrecord
 *.bag
+*.rrd
 # Allow tiny example/fixture data for tests:
 !tests/**/*.csv
 !tests/**/fixtures/**

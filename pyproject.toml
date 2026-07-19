@@ -8,19 +8,19 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.12",          # lqr
     "matplotlib>=3.8",
-    "polars>=0.20",         # log analysis
     "pyyaml>=6.0",
-
-    # hardware comms
-    "moteus-gui",           # moteus lib + moteus_tool + tview
-    "pyserial>=3.5",        # host <-> Teensy
-    "python-can>=4.4",      # CAN-FD support
 
     # sim
     "mujoco>=3.1",
+
+    # visualization (workspace member: packages/scopik)
+    "scopik",
 ]
 
 [project.optional-dependencies]
+hardware = [
+    "moteus-gui",           # moteus lib + moteus_tool + tview
+]
 ml = [
     "torch>=2.3",
     "torchvision>=0.18",
@@ -34,8 +34,12 @@ dev = [
     "ipython>=8.0",
 ]
 
+[tool.uv.workspace]
+members = ["packages/scopik"]
+
 # CUDA wheels on Linux only. macOS gets default Pytorch (MPS on Apple Silicon).
 [tool.uv.sources]
+scopik = { workspace = true }
 torch = [
     { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
 ]
