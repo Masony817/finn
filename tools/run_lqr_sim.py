@@ -16,16 +16,29 @@ import datetime as dt
 import json
 import math
 import sys
+import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 import mujoco
+import mujoco.viewer
 import numpy as np
 from scipy.linalg import solve_discrete_are
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "sim/generated/seeded/latest/finn.seeded.sim.xml"
 DEFAULT_OUT_ROOT = REPO_ROOT / "logs/lqr_sim"
+
+
+def portable_path(path: Path) -> str:
+    """Prefer portable repository-relative paths in generated reports."""
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
 
 # Keep this order fixed.  The LQR gain columns are only understandable if the
 # state vector has one canonical order everywhere in the script.
@@ -52,7 +65,10 @@ class SimConfig:
     control_dt_s: float
     duration_s: float
     initial_pitch_rad: float
+    target_pitch_rad: float
     target_forward_vel_m_s: float
+    position_hold_kp_s: float
+    max_position_correction_m_s: float
     linearization_torque_eps_nm: float
     fall_pitch_rad: float
     pitch_axis: int
@@ -152,15 +168,19 @@ class StateEstimator:
     def forward_pos_m(self, data: mujoco.MjData) -> float:
         left = float(data.sensordata[self.handles.wheel_left_pos_adr])
         right = float(data.sensordata[self.handles.wheel_right_pos_adr])
-        return self.config.forward_sign * signed_forward_wheel_rad(left, right) * (
-            self.handles.wheel_radius_m
+        return (
+            self.config.forward_sign
+            * signed_forward_wheel_rad(left, right)
+            * (self.handles.wheel_radius_m)
         )
 
     def forward_vel_m_s(self, data: mujoco.MjData) -> float:
         left = float(data.sensordata[self.handles.wheel_left_vel_adr])
         right = float(data.sensordata[self.handles.wheel_right_vel_adr])
-        return self.config.forward_sign * signed_forward_wheel_rad(left, right) * (
-            self.handles.wheel_radius_m
+        return (
+            self.config.forward_sign
+            * signed_forward_wheel_rad(left, right)
+            * (self.handles.wheel_radius_m)
         )
 
 
@@ -173,7 +193,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--control-dt-s", type=float, default=0.01)
     parser.add_argument("--duration-s", type=float, default=8.0)
     parser.add_argument("--initial-pitch-rad", type=float, default=0.03)
+    parser.add_argument(
+        "--target-pitch-rad",
+        type=float,
+        help=(
+            "Pitch setpoint in radians. By default it is derived from the seeded "
+            "model's axle-to-COM offset so zero forward velocity is a valid balance point."
+        ),
+    )
     parser.add_argument("--target-forward-vel-m-s", type=float, default=0.0)
+    parser.add_argument(
+        "--position-hold-kp-s",
+        type=float,
+        default=0.15,
+        help=(
+            "Outer-loop position gain in 1/s. It adjusts the LQR velocity target "
+            "to return toward the commanded path; set to 0 to disable position hold."
+        ),
+    )
+    parser.add_argument(
+        "--max-position-correction-m-s",
+        type=float,
+        default=0.15,
+        help="Maximum velocity correction contributed by the outer position loop.",
+    )
     parser.add_argument("--fall-pitch-rad", type=float, default=0.45)
     parser.add_argument(
         "--linearization-torque-eps-nm",
@@ -207,6 +250,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.6,
         help="LQR common torque penalty. Larger values make the controller gentler.",
     )
+    parser.add_argument(
+        "--viewer",
+        action="store_true",
+        help=(
+            "Open a live MuJoCo viewer and pace the closed-loop rollout in real time. "
+            "On macOS, launch this script with mjpython."
+        ),
+    )
     parser.add_argument("--no-plot", action="store_true")
     return parser.parse_args(argv)
 
@@ -229,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         "metrics: "
         f"max_abs_pitch_rad={result['metrics']['max_abs_pitch_rad']:.5f}, "
         f"final_abs_pitch_rad={result['metrics']['final_abs_pitch_rad']:.5f}, "
+        f"final_forward_pos_m={result['metrics']['final_forward_pos_m']:.5f}, "
         f"saturation_fraction={result['metrics']['saturation_fraction']:.3f}"
     )
     return 0 if result["status"] == "pass" else 1
@@ -241,11 +293,22 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     out_dir = args.out_dir or DEFAULT_OUT_ROOT / timestamp()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    model = mujoco.MjModel.from_xml_path(str(args.model))
+    handles = inspect_model(model)
+    target_pitch_rad = (
+        estimate_balance_trim_pitch_rad(model)
+        if args.target_pitch_rad is None
+        else float(args.target_pitch_rad)
+    )
+
     config = SimConfig(
         control_dt_s=args.control_dt_s,
         duration_s=args.duration_s,
         initial_pitch_rad=args.initial_pitch_rad,
+        target_pitch_rad=target_pitch_rad,
         target_forward_vel_m_s=args.target_forward_vel_m_s,
+        position_hold_kp_s=args.position_hold_kp_s,
+        max_position_correction_m_s=args.max_position_correction_m_s,
         linearization_torque_eps_nm=args.linearization_torque_eps_nm,
         fall_pitch_rad=args.fall_pitch_rad,
         pitch_axis=args.pitch_axis,
@@ -253,8 +316,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         forward_sign=args.forward_sign,
     )
 
-    model = mujoco.MjModel.from_xml_path(str(args.model))
-    handles = inspect_model(model)
     validate_timing(model, config)
     validate_linearization_torque(config, handles)
 
@@ -273,7 +334,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     gain = discrete_lqr(a_matrix, b_matrix, q_cost, r_cost)
     closed_loop_eigs = np.linalg.eigvals(a_matrix - b_matrix @ gain)
 
-    rows, metrics = run_closed_loop(model, handles, estimator, config, gain)
+    rows, metrics = run_closed_loop(
+        model,
+        handles,
+        estimator,
+        config,
+        gain,
+        show_viewer=args.viewer,
+    )
     status = "pass" if metrics["pass"] else "failed"
 
     csv_path = out_dir / "timeseries.csv"
@@ -282,8 +350,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
     result: dict[str, object] = {
         "status": status,
-        "out_dir": str(out_dir),
-        "model": str(args.model),
+        "out_dir": portable_path(out_dir),
+        "model": portable_path(args.model),
         "state_names": list(STATE_NAMES),
         "control": {
             "name": "common_balance_torque_nm",
@@ -293,14 +361,17 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             },
             "torque_limit_nm": handles.torque_limit_nm,
             "control_dt_s": config.control_dt_s,
+            "target_pitch_rad": config.target_pitch_rad,
+            "target_forward_vel_m_s": config.target_forward_vel_m_s,
+            "position_hold_kp_s": config.position_hold_kp_s,
+            "max_position_correction_m_s": config.max_position_correction_m_s,
         },
         "linearization": {
             "torque_eps_nm": config.linearization_torque_eps_nm,
             "a_matrix": a_matrix.tolist(),
             "b_matrix": b_matrix.tolist(),
             "closed_loop_eigs": [
-                {"real": float(value.real), "imag": float(value.imag)}
-                for value in closed_loop_eigs
+                {"real": float(value.real), "imag": float(value.imag)} for value in closed_loop_eigs
             ],
         },
         "lqr": {
@@ -311,9 +382,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "metrics": metrics,
         "notes": [
             (
-                "This is a first balance/velocity LQR, not a position-hold controller. "
-                "Wheel position is logged, but intentionally not regulated by this "
-                "single common-torque feedback law."
+                "The inner LQR regulates pitch, pitch rate, and forward velocity. "
+                "A slower outer loop adjusts the velocity target to hold wheel position."
             ),
             (
                 "A marginal closed-loop eigenvalue near 1.0 is expected here because "
@@ -321,8 +391,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             ),
         ],
         "artifacts": {
-            "timeseries_csv": str(csv_path),
-            "report_json": str(report_path),
+            "timeseries_csv": portable_path(csv_path),
+            "report_json": portable_path(report_path),
         },
         "scope": (
             "Sim-only LQR validation using robot-shaped IMU and wheel-odometry state. "
@@ -333,7 +403,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     if not args.no_plot:
         plot_path = out_dir / "timeseries.png"
         if write_plot(plot_path, rows):
-            result["artifacts"]["timeseries_png"] = str(plot_path)  # type: ignore[index]
+            result["artifacts"]["timeseries_png"] = portable_path(plot_path)  # type: ignore[index]
 
     report_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     return result
@@ -384,6 +454,31 @@ def inspect_model(model: mujoco.MjModel) -> ModelHandles:
     )
 
 
+def estimate_balance_trim_pitch_rad(model: mujoco.MjModel) -> float:
+    """Return the pitch that places the whole-robot COM above the wheel axle.
+
+    Finn's CAD-derived COM is slightly behind the axle at zero pitch. Asking the
+    velocity LQR to hold zero pitch therefore forces the wheels to keep moving
+    underneath that offset COM. Rotating the axle-to-COM vector until its
+    forward component is zero gives the stationary balance trim.
+    """
+
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    base_body_id = require_id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+    left_site_id = require_id(model, mujoco.mjtObj.mjOBJ_SITE, "left_wheel_center")
+    right_site_id = require_id(model, mujoco.mjtObj.mjOBJ_SITE, "right_wheel_center")
+
+    axle_pos = 0.5 * (data.site_xpos[left_site_id] + data.site_xpos[right_site_id])
+    axle_to_com = data.subtree_com[base_body_id] - axle_pos
+    vertical_offset_m = float(axle_to_com[2])
+    if vertical_offset_m <= 0.0:
+        raise LqrSimError("cannot derive balance trim: whole-robot COM is not above the wheel axle")
+
+    return math.atan2(-float(axle_to_com[0]), vertical_offset_m)
+
+
 def require_id(model: mujoco.MjModel, obj_type: int, name: str) -> int:
     obj_id = mujoco.mj_name2id(model, obj_type, name)
     if obj_id < 0:
@@ -406,6 +501,10 @@ def validate_timing(model: mujoco.MjModel, config: SimConfig) -> None:
         raise LqrSimError("--control-dt-s must be positive")
     if config.duration_s <= 0.0:
         raise LqrSimError("--duration-s must be positive")
+    if config.position_hold_kp_s < 0.0:
+        raise LqrSimError("--position-hold-kp-s must be nonnegative")
+    if config.max_position_correction_m_s < 0.0:
+        raise LqrSimError("--max-position-correction-m-s must be nonnegative")
     steps = config.control_dt_s / float(model.opt.timestep)
     if not math.isclose(steps, round(steps), rel_tol=0.0, abs_tol=1e-9):
         raise LqrSimError(
@@ -554,77 +653,120 @@ def run_closed_loop(
     estimator: StateEstimator,
     config: SimConfig,
     gain: np.ndarray,
+    *,
+    show_viewer: bool = False,
 ) -> tuple[list[dict[str, float]], dict[str, float | bool]]:
     data = mujoco.MjData(model)
     initial_state = np.array([config.initial_pitch_rad, 0.0, 0.0], dtype=float)
     set_reduced_state(model, data, handles, config, initial_state)
-
-    target_state = np.array(
-        [0.0, 0.0, config.target_forward_vel_m_s],
-        dtype=float,
-    )
 
     rows: list[dict[str, float]] = []
     control_steps = round(config.duration_s / config.control_dt_s)
     saturated_count = 0
     finite = True
     fell = False
+    stopped_by_viewer = False
 
-    for tick in range(control_steps + 1):
-        time_s = tick * config.control_dt_s
-        state = estimator.state(data)
-        error = state - target_state
+    viewer_context = mujoco.viewer.launch_passive(model, data) if show_viewer else nullcontext(None)
+    with viewer_context as viewer:
+        wall_start_s = time.perf_counter()
+        if viewer is not None:
+            viewer.sync()
 
-        # This is the entire LQR controller you would port to the robot once the
-        # estimator is real: read state, subtract target, multiply by K, clip to
-        # the known torque envelope, then send torque commands.
-        raw_tau = float((-gain @ error.reshape(-1, 1)).item())
-        tau = clamp(raw_tau, -handles.torque_limit_nm, handles.torque_limit_nm)
-        saturated = not math.isclose(raw_tau, tau, rel_tol=0.0, abs_tol=1e-12)
-        saturated_count += int(saturated)
+        for tick in range(control_steps + 1):
+            if tick > 0 and viewer is not None and not viewer.is_running():
+                stopped_by_viewer = True
+                break
 
-        rows.append(
-            {
-                "time_s": time_s,
-                "pitch_rad": float(state[0]),
-                "pitch_rate_rad_s": float(state[1]),
-                "forward_pos_m": estimator.relative_forward_pos_m(data),
-                "forward_vel_m_s": float(state[2]),
-                "tau_balance_raw_nm": raw_tau,
-                "tau_balance_nm": tau,
-                "left_cmd_nm": tau,
-                "right_cmd_nm": tau,
-                "saturated": float(saturated),
-            }
-        )
+            time_s = tick * config.control_dt_s
+            state = estimator.state(data)
+            forward_pos_m = estimator.relative_forward_pos_m(data)
+            target_forward_pos_m = config.target_forward_vel_m_s * time_s
+            position_error_m = forward_pos_m - target_forward_pos_m
+            position_velocity_correction_m_s = clamp(
+                -config.position_hold_kp_s * position_error_m,
+                -config.max_position_correction_m_s,
+                config.max_position_correction_m_s,
+            )
+            effective_target_forward_vel_m_s = (
+                config.target_forward_vel_m_s + position_velocity_correction_m_s
+            )
+            target_state = np.array(
+                [config.target_pitch_rad, 0.0, effective_target_forward_vel_m_s],
+                dtype=float,
+            )
+            error = state - target_state
 
-        finite = finite and np.all(np.isfinite(state)) and math.isfinite(tau)
-        fell = fell or abs(float(state[0])) > config.fall_pitch_rad
-        if tick == control_steps or not finite or fell:
-            break
+            # This is the entire LQR controller you would port to the robot once the
+            # estimator is real: read state, subtract target, multiply by K, clip to
+            # the known torque envelope, then send torque commands.
+            raw_tau = float((-gain @ error.reshape(-1, 1)).item())
+            tau = clamp(raw_tau, -handles.torque_limit_nm, handles.torque_limit_nm)
+            saturated = not math.isclose(raw_tau, tau, rel_tol=0.0, abs_tol=1e-12)
+            saturated_count += int(saturated)
 
-        apply_balance_torque(data, handles, tau)
-        step_control_tick(model, data, config)
+            rows.append(
+                {
+                    "time_s": time_s,
+                    "pitch_rad": float(state[0]),
+                    "pitch_rate_rad_s": float(state[1]),
+                    "forward_pos_m": forward_pos_m,
+                    "target_forward_pos_m": target_forward_pos_m,
+                    "forward_vel_m_s": float(state[2]),
+                    "target_forward_vel_m_s": effective_target_forward_vel_m_s,
+                    "tau_balance_raw_nm": raw_tau,
+                    "tau_balance_nm": tau,
+                    "left_cmd_nm": tau,
+                    "right_cmd_nm": tau,
+                    "saturated": float(saturated),
+                }
+            )
+
+            finite = finite and np.all(np.isfinite(state)) and math.isfinite(tau)
+            fell = fell or abs(float(state[0])) > config.fall_pitch_rad
+            if tick == control_steps or not finite or fell:
+                break
+
+            apply_balance_torque(data, handles, tau)
+            step_control_tick(model, data, config)
+
+            if viewer is not None:
+                viewer.sync()
+                target_wall_s = wall_start_s + (tick + 1) * config.control_dt_s
+                remaining_s = target_wall_s - time.perf_counter()
+                if remaining_s > 0.0:
+                    time.sleep(remaining_s)
 
     max_abs_pitch = max(abs(row["pitch_rad"]) for row in rows)
     final_abs_pitch = abs(rows[-1]["pitch_rad"])
+    max_abs_position_error = max(
+        abs(row["forward_pos_m"] - row["target_forward_pos_m"]) for row in rows
+    )
+    final_abs_position_error = abs(rows[-1]["forward_pos_m"] - rows[-1]["target_forward_pos_m"])
     saturation_fraction = saturated_count / max(1, len(rows))
+    position_hold_passed = config.position_hold_kp_s == 0.0 or (
+        max_abs_position_error < 0.25 and final_abs_position_error < 0.10
+    )
 
     passed = (
         finite
         and not fell
         and final_abs_pitch < 0.08
         and max_abs_pitch < config.fall_pitch_rad
+        and position_hold_passed
         and saturation_fraction < 0.80
     )
     return rows, {
         "pass": passed,
         "finite": finite,
         "fell": fell,
+        "stopped_by_viewer": stopped_by_viewer,
         "max_abs_pitch_rad": max_abs_pitch,
         "final_abs_pitch_rad": final_abs_pitch,
         "final_forward_pos_m": rows[-1]["forward_pos_m"],
         "final_forward_vel_m_s": rows[-1]["forward_vel_m_s"],
+        "max_abs_position_error_m": max_abs_position_error,
+        "final_abs_position_error_m": final_abs_position_error,
         "saturation_fraction": saturation_fraction,
         "samples": len(rows),
     }
@@ -700,6 +842,11 @@ def write_timeseries(path: Path, rows: list[dict[str, float]]) -> None:
 
 def write_plot(path: Path, rows: list[dict[str, float]]) -> bool:
     try:
+        import matplotlib
+
+        # mjpython runs the simulation script on a worker thread on macOS. A
+        # file-only plot must therefore use a non-interactive backend.
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         return False
@@ -713,7 +860,14 @@ def write_plot(path: Path, rows: list[dict[str, float]]) -> bool:
     axes[0].plot(time_s, pitch)
     axes[0].set_ylabel("pitch rad")
     axes[1].plot(time_s, forward_pos)
+    axes[1].plot(
+        time_s,
+        [row["target_forward_pos_m"] for row in rows],
+        linestyle="--",
+        label="target",
+    )
     axes[1].set_ylabel("forward m")
+    axes[1].legend()
     axes[2].plot(time_s, tau)
     axes[2].set_ylabel("torque Nm")
     axes[2].set_xlabel("time s")

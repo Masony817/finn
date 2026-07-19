@@ -27,6 +27,18 @@ def test_committed_seed_model_is_present():
     assert MODEL.exists(), f"missing committed seed model: {MODEL}"
 
 
+def test_viewer_is_opt_in():
+    assert rls.parse_args([]).viewer is False
+    assert rls.parse_args(["--viewer"]).viewer is True
+
+
+def test_seeded_model_has_expected_forward_balance_trim():
+    model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
+    trim_rad = rls.estimate_balance_trim_pitch_rad(model)
+
+    assert 0.03 < trim_rad < 0.05
+
+
 def test_lqr_sim_runs_on_committed_model(tmp_path: Path):
     args = rls.parse_args(
         [
@@ -44,5 +56,26 @@ def test_lqr_sim_runs_on_committed_model(tmp_path: Path):
     assert result["status"] in {"pass", "failed"}  # ran to completion, not errored
     gain = result["lqr"]["gain"]  # type: ignore[index]
     assert len(gain) == 1 and len(gain[0]) == len(rls.STATE_NAMES)
+    assert 0.03 < result["control"]["target_pitch_rad"] < 0.05  # type: ignore[index]
     assert (tmp_path / "report.json").exists()
     assert (tmp_path / "timeseries.csv").exists()
+
+
+def test_default_position_hold_limits_30_second_drift(tmp_path: Path):
+    args = rls.parse_args(
+        [
+            "--model",
+            str(MODEL),
+            "--out-dir",
+            str(tmp_path),
+            "--duration-s",
+            "30",
+            "--no-plot",
+        ]
+    )
+    result = rls.run(args)
+    metrics = result["metrics"]
+
+    assert result["status"] == "pass"
+    assert metrics["max_abs_position_error_m"] < 0.15  # type: ignore[index]
+    assert metrics["final_abs_position_error_m"] < 0.05  # type: ignore[index]
