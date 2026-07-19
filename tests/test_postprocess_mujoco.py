@@ -251,9 +251,7 @@ def test_auto_meshdir_follows_nested_export_layout(tmp_path):
     assert report["changes"]["scene"]["compiler_meshdir"] == meshdir
 
 
-_MESH_ASSETS_PRESENT = (
-    ROOT / "sim" / "model" / "finn" / "assets" / "motues_bracket.stl"
-).exists()
+_MESH_ASSETS_PRESENT = (ROOT / "sim" / "model" / "finn" / "assets" / "motues_bracket.stl").exists()
 
 
 @pytest.mark.skipif(

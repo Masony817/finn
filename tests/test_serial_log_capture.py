@@ -653,11 +653,7 @@ def test_batch2_postprocess_reads_v1_schema_and_segment_end(tmp_path: Path):
 
 def test_batch2_postprocess_rejects_malformed_telemetry_rows(tmp_path: Path):
     telemetry = tmp_path / "telemetry.csv"
-    telemetry.write_text(
-        "schema,batch2_v1\n"
-        "data,t_us,state,fault_reason\n"
-        "data,1,running_batch2\n"
-    )
+    telemetry.write_text("schema,batch2_v1\ndata,t_us,state,fault_reason\ndata,1,running_batch2\n")
 
     with pytest.raises(ValueError, match="Malformed telemetry row"):
         batch2_post.read_batch2_rows(telemetry)

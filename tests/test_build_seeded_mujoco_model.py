@@ -109,12 +109,8 @@ def make_batch2_run(
                 "loaded_radius_estimate": {"radius_m": 0.055},
                 "yaw_response": {"effective_track_width_m": 0.34},
             },
-            "contact": {
-                "tire_friction_lower_bounds": {"straight_mu_lower_bound": 0.025}
-            },
-            "delays": {
-                "command_to_measured_torque": {"average": {"delay_s": delay_s}}
-            },
+            "contact": {"tire_friction_lower_bounds": {"straight_mu_lower_bound": 0.025}},
+            "delays": {"command_to_measured_torque": {"average": {"delay_s": delay_s}}},
         },
     }
     write_yaml(run_dir / "postprocess" / "derived.yaml", derived)

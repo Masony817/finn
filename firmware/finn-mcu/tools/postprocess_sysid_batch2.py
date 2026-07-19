@@ -18,6 +18,19 @@ import yaml
 RAD_PER_REV = 2.0 * math.pi
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MEASUREMENTS = REPO_ROOT / "sim" / "config" / "finn_measurements.yaml"
+
+
+def portable_path(path: Path | None) -> str | None:
+    """Prefer portable repository-relative paths in generated artifacts."""
+    if path is None:
+        return None
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
 RAW_SENSOR_FORWARD_ACCEL_FIELD = "imu_linear_accel_z_m_s2"
 ROBOT_FORWARD_ACCEL_FIELD = "robot_forward_accel_m_s2"
 SUPPORTED_SCHEMAS = {"batch2_v1", "batch2_v2"}
@@ -1043,9 +1056,9 @@ def mujoco_params(
 ) -> dict[str, Any]:
     """Assemble the MuJoCo-ready parameter set from batch 1 priors and batch 2 results.
 
-    This is the primary output that feeds fill_measurements.py → finn_measurements.yaml
-    → postprocess_mujoco.py → finn.sim.xml.  Parameters that require batch 3 to
-    identify (solref, solimp) are explicitly set to None here.
+    This output feeds the seeded-model builder, which overlays identified values onto
+    finn_measurements.yaml before running postprocess_mujoco.py. Parameters that still
+    require independent identification (solref, solimp) are explicitly set to None here.
     """
     radius_m, radius_confidence, radius_source = selected_loaded_radius(radius_est, phys)
     open_params = []
@@ -1276,9 +1289,9 @@ def analyze_run(
             "voltage_temp_ranges": voltage_temp,
         },
         "inputs": {
-            "measurements": str(measurements_path),
+            "measurements": portable_path(measurements_path),
             "physical": phys,
-            "batch1_derived": str(batch1_derived) if batch1_derived else None,
+            "batch1_derived": portable_path(batch1_derived),
             "batch1_priors_available": bool(b1_priors),
             "batch1_priors": b1_priors if b1_priors else None,
         },

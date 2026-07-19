@@ -26,6 +26,18 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROBOT_XML = REPO_ROOT / "sim" / "model" / "finn" / "finn_robot.xml"
 DEFAULT_MEASUREMENTS = REPO_ROOT / "sim" / "config" / "finn_measurements.yaml"
 
+
+def portable_path(path: Path | None) -> str | None:
+    """Prefer portable repository-relative paths in generated artifacts."""
+    if path is None:
+        return None
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(resolved)
+
+
 NUMERIC_FIELDS = {
     "t_us",
     "phase_index",
@@ -917,8 +929,8 @@ def analyze_run(
             "imu_rows": len(rows),
         },
         "input_models": {
-            "robot_xml": str(robot_xml) if robot_xml else None,
-            "measurements": str(measurements_path),
+            "robot_xml": portable_path(robot_xml),
+            "measurements": portable_path(measurements_path),
             "physical": phys,
         },
         "wheels": {},

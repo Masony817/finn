@@ -26,7 +26,6 @@ def main():
     results.append(check("numpy", lambda: importlib.import_module("numpy").__version__))
     results.append(check("scipy", lambda: importlib.import_module("scipy").__version__))
     results.append(check("matplotlib", lambda: importlib.import_module("matplotlib").__version__))
-    results.append(check("polars", lambda: importlib.import_module("polars").__version__))
     results.append(check("yaml", lambda: importlib.import_module("yaml").__version__))
 
     # lqr sanity check
@@ -47,30 +46,22 @@ def main():
 
     results.append(check("solve_continuous_are", lqr_check))
 
-    # hardware comms (imports only)
-    print("\nhardware comms:")
+    # Hardware tooling is optional because the simulator does not need the
+    # large Qt dependency pulled in by moteus-gui.
+    print("\nhardware tooling (optional, requires --extra hardware):")
+    try:
+        import shutil
 
-    def moteus_check():
         import moteus
 
         assert hasattr(moteus, "Controller") and hasattr(moteus, "Fdcanusb")
-        return "controller, fdcanusb in moteus lib"
-
-    results.append(check("moteus", moteus_check))
-
-    def moteus_cli_check():
-        import shutil
-
         tview = shutil.which("tview")
         mtool = shutil.which("moteus_tool")
         if not (tview and mtool):
             raise RuntimeError(f"tview={tview}, moteus_tool={mtool}")
-        return "tview + moteus_tool on PATH"
-
-    results.append(check("moteus cli", moteus_cli_check))
-
-    results.append(check("serial", lambda: importlib.import_module("serial").__version__))
-    results.append(check("can", lambda: importlib.import_module("can").__version__))
+        print("  OK    moteus: controller, fdcanusb, tview, and moteus_tool")
+    except ImportError:
+        print("  SKIP  moteus not installed (run `uv sync --extra hardware` to add)")
 
     # sim
     print("\nsim:")
