@@ -86,10 +86,18 @@ def build_run_data(
 
 def load_run(run_dir: Path, profile: Profile, label: str = "real") -> RunData:
     """Load a run directory using the profile's declared source."""
+    if profile.source.type == "csv":
+        from scopik.sources.csv_source import CsvSource
 
-    from scopik.plugins import resolve_source
+        source = CsvSource()
+    elif profile.source.type == "prefixed_csv":
+        from scopik.sources.prefixed_csv import PrefixedCsvSource
 
-    source = resolve_source(profile.source.type)
+        source = PrefixedCsvSource()
+    else:
+        raise ScopikError(
+            f"unknown source {profile.source.type!r}; expected 'csv' or 'prefixed_csv'"
+        )
     data_path = run_dir / profile.source.file
     if run_dir.is_file():
         data_path = run_dir  # allow pointing straight at the file

@@ -1,8 +1,7 @@
-"""Core data types shared by sources, reconstructors, metrics, and logging.
+"""Core data types shared by sources, replay, metrics, and logging.
 
-Everything is plain numpy: a Signal is one named time series, a RunData is one
-recorded (or simulated) run, and a RobotState is the per-frame pose stream a
-reconstructor produces for 3D visualization.
+Everything is plain numpy: a Signal is one named time series and RunData is one
+recorded or simulated run.
 """
 
 from __future__ import annotations
@@ -43,8 +42,8 @@ class RunData:
     label: str
     signals: dict[str, Signal] = field(default_factory=dict)
     meta: dict[str, object] = field(default_factory=dict)
-    # Raw column arrays survive here so reconstructors can read columns that
-    # were not promoted to named signals (e.g. IMU quaternion components).
+    # Raw columns survive so replay can use command fields that were not
+    # promoted to named display signals.
     columns: dict[str, np.ndarray] = field(default_factory=dict)
     # Mostly-non-numeric columns (state machine names, phase labels, fault
     # strings) keep their text form so they can become timeline annotations.
@@ -61,21 +60,6 @@ class RunData:
         if self.times is None or len(self.times) == 0:
             raise ScopikError(f"run {self.label!r} has no time base")
         return self.times
-
-
-@dataclass
-class RobotState:
-    """Per-frame world poses for every MuJoCo body, ready for 3D logging.
-
-    body_positions[name] is (n_frames, 3); body_quats_wxyz[name] is
-    (n_frames, 4) in MuJoCo's wxyz convention. Conversion to other conventions
-    happens at the logging boundary, nowhere else.
-    """
-
-    times: np.ndarray
-    body_names: list[str]
-    body_positions: dict[str, np.ndarray]
-    body_quats_wxyz: dict[str, np.ndarray]
 
 
 @dataclass(frozen=True)

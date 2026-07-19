@@ -1,4 +1,4 @@
-"""Scalar time-series logging: batched for replay, per-frame for live."""
+"""Batched scalar time-series logging for recorded replay."""
 
 from __future__ import annotations
 
@@ -38,13 +38,6 @@ def log_series(
         rr.SeriesLines(names=display_name, colors=color),
         static=True,
     )
-
-
-def log_signal_point(entity_path: str, time_s: float, value: float) -> None:
-    """Per-frame path used by live streaming; same entities as log_series."""
-
-    rr.set_time(TIMELINE, duration=time_s)
-    rr.log(entity_path, rr.Scalars(value))
 
 
 def signal_entity(prefix: str, signal: Signal) -> str:

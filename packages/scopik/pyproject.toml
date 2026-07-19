@@ -1,7 +1,7 @@
 [project]
 name = "scopik"
 version = "0.1.0"
-description = "Sim-vs-real robot visualization on Rerun: replay telemetry, reconstruct 3D state, compare against a MuJoCo model"
+description = "Recorded sim-to-real gap analysis on Rerun for MuJoCo robots"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"

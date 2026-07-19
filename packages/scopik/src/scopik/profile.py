@@ -2,8 +2,7 @@
 
 A profile declares where the MuJoCo model lives, how to parse the telemetry
 log, which columns become named signals (with units and transforms), how to
-reconstruct 3D state from telemetry, how to replay recorded commands through
-the model, and which real/sim signal pairs to compare.
+replay recorded commands through the model, and which real/sim signals to compare.
 
 Paths inside a profile are resolved relative to the profile file itself so a
 profile can live anywhere in a robot's repo.
@@ -74,14 +73,6 @@ class EventsProfile:
 
 
 @dataclass(frozen=True)
-class StateProfile:
-    """Config for a state reconstructor; interpreted by the reconstructor."""
-
-    reconstructor: str
-    options: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class ReplaySample:
     """One sim sensor sampled during command replay, emitted as a signal.
 
@@ -135,7 +126,6 @@ class Profile:
     time: TimeProfile
     signals: tuple[SignalProfile, ...]
     events: EventsProfile | None
-    state: StateProfile | None
     replay: ReplayProfile | None
     compare: tuple[ComparePair, ...]
     scene: SceneProfile
@@ -170,7 +160,6 @@ def parse_profile(raw: dict[str, Any], path: Path) -> Profile:
     time = parse_time(require_map(raw, "time", path), path)
     signals = parse_signals(raw.get("signals") or {}, path)
     events = parse_events(raw.get("events"), path)
-    state = parse_state(raw.get("state"), path)
     replay = parse_replay(raw.get("replay"), path)
     compare = parse_compare(raw.get("compare"), path)
     scene = parse_scene(raw.get("scene"), path)
@@ -198,7 +187,6 @@ def parse_profile(raw: dict[str, Any], path: Path) -> Profile:
         time=time,
         signals=signals,
         events=events,
-        state=state,
         replay=replay,
         compare=compare,
         scene=scene,
@@ -268,16 +256,6 @@ def parse_events(raw: Any, path: Path) -> EventsProfile | None:
         time_transform=transform,
         phase_column=None if phase_column is None else str(phase_column),
     )
-
-
-def parse_state(raw: Any, path: Path) -> StateProfile | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise ProfileError(f"{path}: state must be a mapping")
-    reconstructor = require_str(raw, "reconstructor", path, context="state")
-    options = {key: value for key, value in raw.items() if key != "reconstructor"}
-    return StateProfile(reconstructor=reconstructor, options=options)
 
 
 def parse_replay(raw: Any, path: Path) -> ReplayProfile | None:

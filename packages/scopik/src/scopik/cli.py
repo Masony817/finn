@@ -1,4 +1,4 @@
-"""scopik command line: `scopik gap` today, `scopik live`/`record` reserved."""
+"""scopik command line for recorded sim-to-real gap analysis."""
 
 from __future__ import annotations
 
@@ -48,23 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gap.add_argument("--no-history", action="store_true", help="Do not append to gap history.")
 
-    for name in ("live", "record"):
-        reserved = subparsers.add_parser(name, help="(reserved for live streaming)")
-        reserved.set_defaults(reserved=True)
-
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if getattr(args, "reserved", False):
-            print(
-                f"scopik {args.command} is not built yet; it arrives with live LQR "
-                "bring-up support. Use `scopik gap` on recorded runs.",
-                file=sys.stderr,
-            )
-            return 2
         return run_gap_command(args)
     except ScopikError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -90,7 +90,7 @@ name: myrobot
 model: ../sim/myrobot.xml            # MJCF the replay runs against
 
 source:                              # how to parse the log
-  type: prefixed_csv                 # or csv, or "mypkg.sources:MySource"
+  type: prefixed_csv                 # or csv
   file: telemetry.csv
   line_prefix: "data,"               # rows start with this tag
   header_marker: "data,t_us,"        # the first matching line is the CSV header
@@ -145,18 +145,9 @@ or `/finn-gap-review` in Claude Code. Both entrypoints use the same checked-in
 workflow and treat Scopik's numeric output as evidence rather than asking an LLM
 to re-estimate time-series features.
 
-## Extending
+## Scope
 
-- **New log format**: implement `read_table(path, profile) -> (numeric, text)` in your
-  own package and set `source.type: "mypkg.sources:MySource"`. No scopik changes.
-- **Different robot**: write a profile. The core has no robot-specific code.
-
-## Status & roadmap
-
-Built and used inside the [finn](../../README.md) self-balancing robot project; the
-core is robot-agnostic and will be extracted to its own repo once interfaces settle.
-
-- `scopik gap` — works (this document).
-- `scopik live` — next: stream serial telemetry onto the timeline during bench runs,
-  with a pre-logged sim reference run for realtime sim-vs-real overlay.
-- 3D scene views — later, pulled in when a milestone needs them.
+Scopik currently does one job: recorded open-loop sim-to-real comparison. Finn's
+capture tools write complete logs first, then invoke this command after the motors
+are stopped. Live streaming, generic plugins, and 3D reconstruction stay out until
+a real robot workflow requires them.
