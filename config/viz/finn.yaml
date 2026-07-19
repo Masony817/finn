@@ -66,7 +66,9 @@ replay:
   # stiff support: roll/pitch projected out, yaw + translation free.
   hold_upright: root_freejoint
   sample:
-    left_vel_rev_s:           {sensor: wheel_left_vel,    transform: rad_to_rev, unit: rev/s}
+    # The left MuJoCo joint coordinate is opposite the physical forward-positive
+    # Moteus telemetry convention. Normalize it here before any gap metrics.
+    left_vel_rev_s:           {sensor: wheel_left_vel,    transform: [rad_to_rev, negate], unit: rev/s}
     right_vel_rev_s:          {sensor: wheel_right_vel,   transform: rad_to_rev, unit: rev/s}
     pitch_rate_rad_s:         {sensor: imu_gyro,          index: 0, unit: rad/s}
     yaw_rate_rad_s:           {sensor: imu_gyro,          index: 1, unit: rad/s}

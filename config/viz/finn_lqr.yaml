@@ -1,0 +1,58 @@
+# Scopik profile for free-balancing Finn LQR captures.
+#
+# Unlike the Batch 2 profile, this replay does not hold the model upright. It
+# replays the real motor commands into the free seeded model so a short failed
+# balance attempt can be compared without pretending the gantry still exists.
+
+name: finn_lqr
+model: ../../sim/generated/seeded/latest/finn.seeded.sim.xml
+
+source:
+  type: prefixed_csv
+  file: telemetry.csv
+  line_prefix: "data,"
+  header_marker: "data,t_us,"
+
+time: {column: t_us, transform: us_to_s}
+
+events:
+  file: events.log
+  prefix: "event,"
+  time_index: 1
+  time_transform: us_to_s
+  phase_column: phase
+
+signals:
+  pitch_rad:                 {unit: rad,   group: attitude}
+  pitch_rate_rad_s:          {unit: rad/s, group: attitude}
+  yaw_rate_rad_s:            {unit: rad/s, group: attitude}
+  left_vel_rev_s:            {unit: rev/s, group: wheels}
+  right_vel_rev_s:           {unit: rev/s, group: wheels}
+  forward_vel_m_s:           {unit: m/s,   group: wheels}
+  forward_pos_m:             {unit: m,     group: wheels}
+  left_cmd_nm:               {unit: "N·m", group: commands}
+  right_cmd_nm:              {unit: "N·m", group: commands}
+  balance_tau_raw_nm:        {unit: "N·m", group: controller}
+  target_pitch_rad:          {unit: rad,   group: controller}
+  target_forward_vel_m_s:    {unit: m/s,   group: controller}
+  robot_forward_accel_m_s2:  {unit: "m/s²", group: imu}
+  imu_age_ms:                {unit: ms,    group: health}
+
+replay:
+  actuators:
+    motor_left_wheel: left_cmd_nm
+    motor_right_wheel: right_cmd_nm
+  sample:
+    left_vel_rev_s:  {sensor: wheel_left_vel,  transform: [rad_to_rev, negate], unit: rev/s}
+    right_vel_rev_s: {sensor: wheel_right_vel, transform: rad_to_rev, unit: rev/s}
+    pitch_rate_rad_s: {sensor: imu_gyro, index: 0, unit: rad/s}
+    yaw_rate_rad_s:   {sensor: imu_gyro, index: 1, unit: rad/s}
+    robot_forward_accel_m_s2:
+      {sensor: imu_accelerometer, index: 2, unit: "m/s²", gravity_compensated: true}
+
+compare:
+  - {name: left_vel,      real: left_vel_rev_s,           sim: left_vel_rev_s,           unit: rev/s}
+  - {name: right_vel,     real: right_vel_rev_s,          sim: right_vel_rev_s,          unit: rev/s}
+  - {name: pitch_rate,    real: pitch_rate_rad_s,         sim: pitch_rate_rad_s,         unit: rad/s}
+  - {name: yaw_rate,      real: yaw_rate_rad_s,           sim: yaw_rate_rad_s,           unit: rad/s}
+  - {name: forward_accel, real: robot_forward_accel_m_s2, sim: robot_forward_accel_m_s2, unit: "m/s²"}

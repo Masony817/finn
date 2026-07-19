@@ -72,6 +72,22 @@ def test_send_command_appends_single_newline():
         os.close(write_fd)
 
 
+def test_send_stop_commands_repeats_before_disconnect():
+    read_fd, write_fd = os.pipe()
+    args = slc.build_parser().parse_args(
+        ["--stop-command", "STOP", "--stop-command-repeats", "3", "--stop-command-spacing-s", "0"]
+    )
+    args = slc.normalize_args(args)
+    try:
+        slc.send_stop_commands(write_fd, args)
+        ready, _, _ = select.select([read_fd], [], [], 1.0)
+        assert read_fd in ready
+        assert os.read(read_fd, 1024) == b"STOP\nSTOP\nSTOP\n"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_print_teensy_hides_data_by_default(capsys):
     args = argparse.Namespace(show_telemetry=False)
     slc.print_teensy("data,123,running_batch1,0,settle_stop", args)
@@ -169,6 +185,8 @@ def test_line_has_run_marker_accepts_running_sysid_batches():
     assert slc.line_has_run_marker("event,1,segment_start,running_batch2,straight")
     assert slc.line_has_run_marker("data,1,running_batch1,0,phase,1")
     assert slc.line_has_run_marker("data,1,running_batch2,0,phase,1")
+    assert slc.line_has_run_marker("event,1,lqr_start,running_lqr,release")
+    assert slc.line_has_run_marker("data,1,running_lqr,balance,1")
     assert not slc.line_has_run_marker("data,1,safe_idle,-1,idle,0")
 
 
@@ -864,6 +882,47 @@ def test_capture_sysid_batch1_defaults_include_measurements(monkeypatch):
     assert args.auto_command == ["ARM FINN", "RUN BATCH1"]
     assert "--measurements" in args.postprocess
     assert "finn_measurements.yaml" in args.postprocess
+
+
+def test_capture_lqr_defaults_to_heartbeat_and_stop(monkeypatch):
+    module_path = TOOLS / "capture-lqr-balance.py"
+    spec = importlib.util.spec_from_file_location("capture_lqr_balance", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = module.parse_args([])
+
+    assert args.run_name == "lqr"
+    assert args.upload_env == "lqr_balance"
+    assert args.pass_marker == [",lqr_complete,"]
+    assert args.fail_marker == [",failsafe,"]
+    assert args.arm_command == ["ARM FINN"]
+    assert args.run_command == ["RUN LQR"]
+    assert args.periodic_command == ["HEARTBEAT"]
+    assert args.periodic_command_interval_s == 0.1
+    assert args.stop_command == ["STOP"]
+    assert args.stop_command_repeats == 3
+    assert "finn_lqr.yaml" in args.postprocess
+    assert "--no-replay" not in args.postprocess
+
+
+def test_capture_lqr_convention_check_never_arms_or_replays():
+    module_path = TOOLS / "capture-lqr-balance.py"
+    spec = importlib.util.spec_from_file_location("capture_lqr_balance_check", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = module.parse_args(["--check-conventions", "--skip-upload"])
+
+    assert args.run_name == "lqr_convention_check"
+    assert args.upload_env is None
+    assert args.pass_marker == [",convention_check_complete,"]
+    assert args.arm_command == []
+    assert args.run_command == ["CHECK CONVENTIONS"]
+    assert "--no-replay" in args.postprocess
+    assert args.show_telemetry is True
 
 
 def test_arm_command_override_replaces_default():

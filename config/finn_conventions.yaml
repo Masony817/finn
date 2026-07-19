@@ -1,0 +1,47 @@
+schema_version: 1
+
+# One machine-readable contract for telemetry, MuJoCo, Scopik, and the real
+# controller. Values here describe signs and axes; physical sign checks that
+# still need a hands-on confirmation are called out explicitly.
+robot_frame:
+  forward_axis: "+x"
+  left_axis: "+y"
+  up_axis: "+z"
+
+imu:
+  pitch_sensor_axis: x
+  yaw_sensor_axis: y
+  forward_accel_sensor_axis: z
+  pitch_sign: 1
+  yaw_sign: 1
+  forward_accel_sign: -1
+  pitch_direction_bench_verified: false
+  notes: >-
+    Hold Finn with motors stopped before the first balance run. Zero the robot
+    mechanically upright, tip the top forward, and confirm pitch_rad and
+    pitch_rate_rad_s increase. The active LQR firmware refuses to run until
+    this flag is set true and its generated header is rebuilt.
+
+wheel_odometry:
+  # Moteus telemetry is already forward-normalized on the physical robot:
+  # equal positive wheel velocities mean robot-forward motion.
+  real_left_to_forward_sign: 1
+  real_right_to_forward_sign: 1
+  encoder_directions_bench_verified: false
+
+  # The generated MuJoCo joints use opposite raw coordinates. Convert both to
+  # forward-positive before comparing them with physical telemetry.
+  sim_left_joint_to_forward_sign: -1
+  sim_right_joint_to_forward_sign: 1
+
+actuation:
+  # The controller sends one common balance torque to both physical moteus
+  # controllers. MuJoCo encodes the mirrored left motor in its actuator gear.
+  real_left_common_torque_sign: 1
+  real_right_common_torque_sign: 1
+  sim_left_actuator_gear: -1
+  sim_right_actuator_gear: 1
+  notes: >-
+    Batch 1 and Batch 2 used equal-sign commands for straight motion. The
+    opposite MuJoCo gears come from the mirrored simulated joint coordinates;
+    they are not extra signs to apply to the physical moteus commands.

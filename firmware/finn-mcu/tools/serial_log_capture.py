@@ -143,6 +143,18 @@ def send_command(fd: int, command: str) -> None:
     os.write(fd, command.rstrip("\r\n").encode("utf-8") + b"\n")
 
 
+def send_stop_commands(fd: int, args: argparse.Namespace) -> None:
+    """Best-effort motor stop before a capture releases the serial connection."""
+    for _ in range(args.stop_command_repeats):
+        for command in args.stop_command:
+            try:
+                send_command(fd, command)
+            except OSError:
+                return
+        if args.stop_command and args.stop_command_spacing_s > 0.0:
+            time.sleep(args.stop_command_spacing_s)
+
+
 def find_platformio_executable() -> str | None:
     for name in ("pio", "platformio"):
         resolved = shutil.which(name)
@@ -254,7 +266,12 @@ def classify_line(line: str, current_status: str, args: argparse.Namespace) -> s
 
 
 def line_has_run_marker(line: str) -> bool:
-    return ",segment_start," in line or (line.startswith("data,") and ",running_batch" in line)
+    return (
+        ",segment_start," in line
+        or ",lqr_start," in line
+        or (line.startswith("data,") and ",running_batch" in line)
+        or (line.startswith("data,") and ",running_lqr," in line)
+    )
 
 
 def terminal_status_line(status: str) -> str:
@@ -275,6 +292,12 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.event_prefix = args.event_prefix or list(DEFAULT_EVENT_PREFIXES)
     args.arm_command = args.arm_command or []
     args.run_command = args.run_command or []
+    args.periodic_command = args.periodic_command or []
+    args.stop_command = args.stop_command or []
+    if args.periodic_command_interval_s <= 0.0:
+        raise SystemExit("--periodic-command-interval-s must be positive")
+    if args.stop_command_repeats < 1:
+        raise SystemExit("--stop-command-repeats must be at least 1")
     return args
 
 
@@ -311,6 +334,9 @@ def run_capture(
         "auto_commands": args.auto_command,
         "arm_commands": args.arm_command,
         "run_commands": args.run_command,
+        "periodic_commands": args.periodic_command,
+        "periodic_command_interval_s": args.periodic_command_interval_s,
+        "stop_commands": args.stop_command,
         "pending_dir": str(pending_dir),
         "final_dir": None,
         "postprocess": None,
@@ -337,6 +363,7 @@ def run_capture(
     auto_commands_sent = False
     armed_seen = False
     run_seen = False
+    last_periodic_command_monotonic = 0.0
 
     def handle_signal(signum: int, frame: object) -> None:
         nonlocal stop_requested, status
@@ -374,6 +401,15 @@ def run_capture(
                         time.sleep(args.auto_command_spacing_s)
                     auto_commands_sent = True
                     write_event_line("event,0,capture_auto_command,host,commands_sent", events_file)
+
+                if (
+                    args.periodic_command
+                    and now - start_monotonic >= args.periodic_command_delay_s
+                    and now - last_periodic_command_monotonic >= args.periodic_command_interval_s
+                ):
+                    for command in args.periodic_command:
+                        send_command(fd, command)
+                    last_periodic_command_monotonic = now
 
                 read_fds = [fd]
                 if sys.stdin.isatty():
@@ -440,6 +476,7 @@ def run_capture(
                     line_callback(line)
 
     finally:
+        send_stop_commands(fd, args)
         signal.signal(signal.SIGINT, old_sigint)
         signal.signal(signal.SIGTERM, old_sigterm)
         os.close(fd)
@@ -517,6 +554,20 @@ def add_capture_arguments(
     )
     parser.add_argument("--auto-command-delay-s", type=float, default=2.0)
     parser.add_argument("--auto-command-spacing-s", type=float, default=0.1)
+    parser.add_argument(
+        "--periodic-command",
+        action="append",
+        help="Command sent repeatedly while capture is connected, e.g. HEARTBEAT.",
+    )
+    parser.add_argument("--periodic-command-delay-s", type=float, default=0.0)
+    parser.add_argument("--periodic-command-interval-s", type=float, default=0.1)
+    parser.add_argument(
+        "--stop-command",
+        action="append",
+        help="Best-effort command sent before closing serial, e.g. STOP.",
+    )
+    parser.add_argument("--stop-command-repeats", type=int, default=3)
+    parser.add_argument("--stop-command-spacing-s", type=float, default=0.03)
     parser.add_argument(
         "--timeout-s", type=float, default=0.0, help="Optional capture timeout. 0 disables."
     )

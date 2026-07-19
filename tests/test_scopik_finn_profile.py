@@ -7,10 +7,13 @@ normally (no importlib gymnastics).
 from pathlib import Path
 
 import pytest
+import yaml
 from scopik import load_profile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = REPO_ROOT / "config/viz/finn.yaml"
+LQR_PROFILE_PATH = REPO_ROOT / "config/viz/finn_lqr.yaml"
+CONVENTIONS_PATH = REPO_ROOT / "config/finn_conventions.yaml"
 
 BATCH2_HEADER = (
     "data,t_us,state,phase_index,phase,armed,control_tick_us,segment_elapsed_ms,"
@@ -55,6 +58,29 @@ def test_finn_profile_loads_and_matches_seeded_model():
         "yaw_rate",
         "forward_accel",
     }
+
+
+def test_finn_profiles_enforce_forward_positive_wheel_conventions():
+    conventions = yaml.safe_load(CONVENTIONS_PATH.read_text(encoding="utf-8"))
+    wheels = conventions["wheel_odometry"]
+    assert wheels["real_left_to_forward_sign"] == 1
+    assert wheels["real_right_to_forward_sign"] == 1
+    assert wheels["encoder_directions_bench_verified"] is False
+    assert wheels["sim_left_joint_to_forward_sign"] == -1
+    assert wheels["sim_right_joint_to_forward_sign"] == 1
+
+    for profile_path in (PROFILE_PATH, LQR_PROFILE_PATH):
+        profile = load_profile(profile_path)
+        replay_samples = {sample.name: sample for sample in profile.replay.samples}
+        assert replay_samples["left_vel_rev_s"].transform == ["rad_to_rev", "negate"]
+        assert replay_samples["right_vel_rev_s"].transform == "rad_to_rev"
+
+
+def test_lqr_profile_replays_the_free_model():
+    profile = load_profile(LQR_PROFILE_PATH)
+    assert profile.name == "finn_lqr"
+    assert profile.replay is not None
+    assert profile.replay.hold_upright is None
 
 
 def test_finn_gap_pipeline_on_synthetic_batch2(tmp_path):

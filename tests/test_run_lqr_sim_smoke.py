@@ -79,3 +79,30 @@ def test_default_position_hold_limits_30_second_drift(tmp_path: Path):
     assert result["status"] == "pass"
     assert metrics["max_abs_position_error_m"] < 0.15  # type: ignore[index]
     assert metrics["final_abs_position_error_m"] < 0.05  # type: ignore[index]
+
+
+def test_firmware_header_is_exported_from_a_passing_sim(tmp_path: Path):
+    header = tmp_path / "lqr_seeded_config.h"
+    args = rls.parse_args(
+        [
+            "--model",
+            str(MODEL),
+            "--out-dir",
+            str(tmp_path / "run"),
+            "--duration-s",
+            "1",
+            "--no-plot",
+            "--firmware-header",
+            str(header),
+        ]
+    )
+
+    result = rls.run(args)
+    text = header.read_text(encoding="utf-8")
+
+    assert result["status"] == "pass"
+    assert result["model_sha256_12"] in text
+    assert "kGainPitch" in text
+    assert "kRealLeftEncoderForwardSign = 1.0f" in text
+    assert "kPitchDirectionBenchVerified = false" in text
+    assert "kWheelEncoderDirectionsBenchVerified = false" in text

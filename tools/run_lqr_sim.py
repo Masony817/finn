@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import hashlib
 import json
 import math
 import sys
@@ -24,11 +25,13 @@ from pathlib import Path
 import mujoco
 import mujoco.viewer
 import numpy as np
+import yaml
 from scipy.linalg import solve_discrete_are
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "sim/generated/seeded/latest/finn.seeded.sim.xml"
 DEFAULT_OUT_ROOT = REPO_ROOT / "logs/lqr_sim"
+DEFAULT_CONVENTIONS = REPO_ROOT / "config/finn_conventions.yaml"
 
 
 def portable_path(path: Path) -> str:
@@ -38,6 +41,10 @@ def portable_path(path: Path) -> str:
         return str(resolved.relative_to(REPO_ROOT))
     except ValueError:
         return str(resolved)
+
+
+def sha256_12(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 
 
 # Keep this order fixed.  The LQR gain columns are only understandable if the
@@ -258,6 +265,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "On macOS, launch this script with mjpython."
         ),
     )
+    parser.add_argument(
+        "--firmware-header",
+        type=Path,
+        help=(
+            "Write the validated gain, trim, model hash, and convention constants "
+            "to a C++ header for the real Finn controller."
+        ),
+    )
+    parser.add_argument(
+        "--conventions",
+        type=Path,
+        default=DEFAULT_CONVENTIONS,
+        help="Machine-readable Finn frame/sign convention contract.",
+    )
     parser.add_argument("--no-plot", action="store_true")
     return parser.parse_args(argv)
 
@@ -271,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"wrote LQR validation bundle: {result['out_dir']}")
+    if args.firmware_header:
+        print(f"wrote firmware controller header: {portable_path(args.firmware_header)}")
     print(f"status: {result['status']}")
     lqr_result = result["lqr"]
     if not isinstance(lqr_result, dict):
@@ -352,6 +375,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "status": status,
         "out_dir": portable_path(out_dir),
         "model": portable_path(args.model),
+        "model_sha256_12": sha256_12(args.model),
         "state_names": list(STATE_NAMES),
         "control": {
             "name": "common_balance_torque_nm",
@@ -361,10 +385,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             },
             "torque_limit_nm": handles.torque_limit_nm,
             "control_dt_s": config.control_dt_s,
+            "wheel_radius_m": handles.wheel_radius_m,
             "target_pitch_rad": config.target_pitch_rad,
             "target_forward_vel_m_s": config.target_forward_vel_m_s,
             "position_hold_kp_s": config.position_hold_kp_s,
             "max_position_correction_m_s": config.max_position_correction_m_s,
+            "pitch_axis": config.pitch_axis,
+            "pitch_sign": config.pitch_sign,
+            "forward_sign": config.forward_sign,
         },
         "linearization": {
             "torque_eps_nm": config.linearization_torque_eps_nm,
@@ -405,8 +433,88 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         if write_plot(plot_path, rows):
             result["artifacts"]["timeseries_png"] = portable_path(plot_path)  # type: ignore[index]
 
+    if args.firmware_header:
+        write_firmware_header(args.firmware_header, result, args.conventions)
+        result["artifacts"]["firmware_header"] = portable_path(args.firmware_header)  # type: ignore[index]
+
     report_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     return result
+
+
+def write_firmware_header(path: Path, result: dict[str, object], conventions_path: Path) -> None:
+    """Export the exact validated sim controller into a small C++ header.
+
+    The real firmware never carries a hand-copied gain. Regenerating this file
+    records the model hash and pulls every frame/sign constant from the checked-in
+    convention contract.
+    """
+
+    if result.get("status") != "pass":
+        raise LqrSimError("refusing to export firmware constants from a failed sim rollout")
+    if not conventions_path.exists():
+        raise LqrSimError(f"missing convention contract: {conventions_path}")
+
+    conventions = yaml.safe_load(conventions_path.read_text(encoding="utf-8"))
+    try:
+        imu = conventions["imu"]
+        wheels = conventions["wheel_odometry"]
+        actuation = conventions["actuation"]
+        control = result["control"]
+        gain = result["lqr"]["gain"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LqrSimError("controller result or convention contract is incomplete") from exc
+
+    if result.get("state_names") != list(STATE_NAMES):
+        raise LqrSimError("firmware export requires the canonical three-state LQR ordering")
+
+    def cpp_bool(value: object) -> str:
+        return "true" if bool(value) else "false"
+
+    def cpp_float(value: object) -> str:
+        rendered = f"{float(value):.9g}"
+        if not any(marker in rendered for marker in (".", "e", "E")):
+            rendered += ".0"
+        return rendered + "f"
+
+    control_period_us = round(float(control["control_dt_s"]) * 1_000_000.0)
+    max_position_correction = cpp_float(control["max_position_correction_m_s"])
+    left_encoder_sign = cpp_float(wheels["real_left_to_forward_sign"])
+    right_encoder_sign = cpp_float(wheels["real_right_to_forward_sign"])
+    left_torque_sign = cpp_float(actuation["real_left_common_torque_sign"])
+    right_torque_sign = cpp_float(actuation["real_right_common_torque_sign"])
+    lines = [
+        "#pragma once",
+        "",
+        "// Generated by tools/run_lqr_sim.py from the committed seeded model.",
+        "// Do not tune this header by hand; change the sim/controller inputs and regenerate it.",
+        "namespace FinnLqrSeeded {",
+        f'constexpr char kModelSha256[] = "{result["model_sha256_12"]}";',
+        f"constexpr unsigned long kControlPeriodUs = {control_period_us}UL;",
+        f"constexpr float kWheelRadiusM = {cpp_float(control['wheel_radius_m'])};",
+        f"constexpr float kTorqueLimitNm = {cpp_float(control['torque_limit_nm'])};",
+        f"constexpr float kTargetPitchRad = {cpp_float(control['target_pitch_rad'])};",
+        f"constexpr float kTargetForwardVelMS = {cpp_float(control['target_forward_vel_m_s'])};",
+        f"constexpr float kPositionHoldKpS = {cpp_float(control['position_hold_kp_s'])};",
+        f"constexpr float kMaxPositionCorrectionMS = {max_position_correction};",
+        f"constexpr float kGainPitch = {cpp_float(gain[0])};",
+        f"constexpr float kGainPitchRate = {cpp_float(gain[1])};",
+        f"constexpr float kGainForwardVel = {cpp_float(gain[2])};",
+        f"constexpr int kPitchAxis = {int(control['pitch_axis'])};",
+        f"constexpr float kPitchSign = {cpp_float(imu['pitch_sign'])};",
+        f"constexpr float kForwardAccelSign = {cpp_float(imu['forward_accel_sign'])};",
+        f"constexpr float kRealLeftEncoderForwardSign = {left_encoder_sign};",
+        f"constexpr float kRealRightEncoderForwardSign = {right_encoder_sign};",
+        "constexpr bool kWheelEncoderDirectionsBenchVerified = "
+        f"{cpp_bool(wheels['encoder_directions_bench_verified'])};",
+        f"constexpr float kRealLeftCommonTorqueSign = {left_torque_sign};",
+        f"constexpr float kRealRightCommonTorqueSign = {right_torque_sign};",
+        "constexpr bool kPitchDirectionBenchVerified = "
+        f"{cpp_bool(imu['pitch_direction_bench_verified'])};",
+        "}  // namespace FinnLqrSeeded",
+        "",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def inspect_model(model: mujoco.MjModel) -> ModelHandles:

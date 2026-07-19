@@ -18,7 +18,7 @@ Licensed under [Apache 2.0](LICENSE).
 
 ```
 firmware/finn-mcu/   Teensy 4.1 firmware (PlatformIO) + MJBots Moteus motor control,
-                     including the on-robot system-ID sketches and capture tools
+                     including system-ID, safety-gated LQR, and capture tools
 sim/
   model/finn/        Hand-authored MuJoCo model, meshes (STL), and scene
   config/            Canonical measurements + postprocess config (source of truth)
@@ -26,7 +26,7 @@ sim/
 tools/               Host-side Python: build the seed model, run the LQR sim,
                      postprocess sysid, environment check
 tests/               pytest suite for the host tools
-config/              Motor (moteus) calibration logs
+config/              Frame/sign contracts, Scopik profiles, and local motor config
 ```
 
 ## Quick start (host / sim)
@@ -87,6 +87,17 @@ Use the repo's `finn-gap-review` agent skill after a run when you want a
 physics-grounded brief that connects those measurements to the next model
 parameter or validation check.
 
+## Real-robot LQR bring-up
+
+The repo now has a deliberately gated Teensy controller and capture path for
+the first unsupported-floor balance trials. Start with the motor-disabled frame
+and sign check; the firmware will not arm until those physical observations are
+recorded in `config/finn_conventions.yaml` and a passing sim run regenerates the
+controller header.
+
+See [Real-robot LQR bring-up](docs/real_lqr_bringup.md) for the exact commands,
+two-person no-stand procedure, safety limits, and Scopik feedback loop.
+
 ## From robot to model: the system-ID pipeline
 
 The MuJoCo model is not guessed — its wheel friction, damping, torque limits,
@@ -120,12 +131,11 @@ is build-verified on every push.
 
 ## Status & limitations
 
-- The first LQR is a **sim validation**, not a tuned hardware controller. Two
-  things must be addressed before hardware balance tests: the model's center of
-  mass sits behind the wheel axle (the controller should regulate to that trim
-  pitch, not zero), and the seeded `±0.25 N·m` torque cap is a firmware sysid
-  safety limit that gives a very small recovery envelope — hub-motor capability
-  is much higher.
+- The LQR gain and trim are **sim validated, not hardware tuned**. The real
+  controller starts behind physical sign checks, a host heartbeat, a three-second
+  trial limit, and conservative fault limits. The seeded `±0.25 N·m` torque cap
+  gives a small recovery envelope; hub-motor capability is much higher, but the
+  first trials intentionally do not use it.
 - Contact parameters (friction, solref, solimp) are provisional defaults, not
   identified. World-pose / slip accuracy and closed-loop sim-to-real transfer
   are explicitly **not** validated yet.
