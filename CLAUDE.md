@@ -123,6 +123,60 @@ Short LQR captures are the next controlled dataset.
 6. **One coupled parameter family per iteration**, unless the effects are
    independently observable.
 
+## Comments
+
+Never write a comment that restates the code. Default to no comment; when one is
+warranted, default to one line.
+
+Redundant commenting is the most common defect in agent-written code, and the pull
+toward it is strong enough to survive a general instruction to stop. So this
+section is checks and examples rather than adjectives - apply it mechanically, not
+by feel.
+
+**A comment earns its place only by recording one of:**
+
+- why the code is this way and not the obvious way - name the ticket, benchmark, or
+  bug that decided it
+- a non-obvious invariant or precondition a caller has to hold
+- the specific failure a guard prevents
+- an external contract the code cannot state itself: wire format, provider quirk,
+  library nullability
+
+**Length is one line.** A second line requires a reader who would otherwise get it
+wrong. A fifth means the code is unclear - fix the code.
+
+**The delete test** - run it on every comment you write. Delete the comment and
+re-read the code. If the code still conveys everything the comment did, it stays
+deleted. A comment survives only by carrying what the code cannot: a reason, a
+constraint, a measurement, or a bug.
+
+Fails the test, from the shape of code in this repo:
+
+```cpp
+// clamp the value to the limits
+float clampFloat(const float value, const float lower, const float upper);
+// wrap to +/- pi
+float wrapPi(float value);
+```
+
+Earns its place, because deleting it loses a measurement or a decision the code
+cannot state:
+
+```cpp
+constexpr float kMoteusWatchdogTimeoutS = 0.05f;  // 5x the 100 Hz control period
+```
+
+```python
+# mjpython needs a framework Python; uv's standalone build hides the shared library.
+```
+
+One carve-out, and it is narrow: physical provenance in `sim/config/finn_measurements.yaml`
+and `config/finn_conventions.yaml` is data, not commentary. A measured constant's
+justification cannot be moved into the code, because the constant *is* the code, so
+it belongs in the schema's `notes:` field or beside the value it justifies and the
+length rule does not apply. Do not strip sign, bug, or measurement provenance from
+those files to satisfy this section.
+
 ## Area conventions
 
 ### Host Python (`tools/`, `firmware/finn-mcu/tools/`)
@@ -137,8 +191,6 @@ Short LQR captures are the next controlled dataset.
   `BuildSeededModelError`) carrying a user-facing message, rather than a traceback.
 - Generated reports use repo-relative paths via the local `portable_path` helper
   so artifacts are portable across machines.
-- Comments explain *why* (physics, hardware quirks, a MuJoCo gotcha). The existing
-  density is high and intentional; match it.
 
 ### scopik (`packages/scopik/`)
 
