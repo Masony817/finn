@@ -133,9 +133,10 @@ is build-verified on every push.
 
 - The LQR gain and trim are **sim validated, not hardware tuned**. The real
   controller starts behind physical sign checks, a host heartbeat, a three-second
-  trial limit, and conservative fault limits. The seeded `±0.25 N·m` torque cap
-  gives a small recovery envelope; hub-motor capability is much higher, but the
-  first trials intentionally do not use it.
+  trial limit, and conservative fault limits. The seeded `±1.0 N·m` torque
+  envelope recovers about 11 degrees of lean in sim and caps chassis acceleration
+  near 3 m/s²; hub-motor capability is much higher, but the first trials
+  intentionally do not use it.
 - Contact parameters (friction, solref, solimp) are provisional defaults, not
   identified. World-pose / slip accuracy and closed-loop sim-to-real transfer
   are explicitly **not** validated yet.

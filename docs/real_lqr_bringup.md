@@ -39,9 +39,17 @@ uv run python tools/run_lqr_sim.py \
 ```
 
 The last command must report `status=pass`. It records the model hash, gain,
-trim pitch, controller timing, and convention flags in the firmware header. The
-default physical torque limit remains `0.25 N m`; raising it is a later,
-deliberate validation step, not part of first bring-up.
+trim pitch, controller timing, and convention flags in the firmware header.
+
+The torque envelope is `1.0 N m` per wheel. It was `0.25 N m` until 2026-08-05,
+inherited from whatever hard cap the Batch 1 bench firmware happened to run with
+rather than chosen. That value is below what the robot physically needs: with
+both wheels capped there, gravity wins past 2.8 degrees of lean, so the arm gate
+was allowing release poses the controller could not recover from. At `1.0 N m`
+the sim recovers about 11.3 degrees, which covers the 8 degree arm window with
+margin, while capping chassis acceleration near 3 m/s^2. The hub motors can
+deliver considerably more; raising the envelope again is a later, deliberate
+validation step.
 
 For a first unsupported trial, use two people: one holding and catching Finn,
 and one operating the host. Clear the floor and keep hands, clothing, and the

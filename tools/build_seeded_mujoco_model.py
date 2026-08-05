@@ -27,6 +27,16 @@ DEFAULT_ROBOT = Path("sim/model/finn/finn_robot.xml")
 DEFAULT_SCENE = Path("sim/model/finn/scene.xml")
 DEFAULT_CONFIG = Path("sim/config/mujoco_postprocess.yaml")
 DEFAULT_CONTACT_FRICTION = [1.0, 0.02, 0.002]
+
+# Per-wheel torque envelope the sim validates the balance controller against.
+#
+# Sized from the corrected seeded model rather than inherited from Batch 1: with
+# both wheels at this cap the controller recovers roughly 11 degrees of lean from
+# the balance trim, which covers the firmware's 8 degree arm window with margin,
+# while capping chassis acceleration near 3 m/s^2 so a fault cannot launch the
+# robot across the room. The hub motors can deliver considerably more; that extra
+# authority stays unused until a milestone needs it.
+DEFAULT_TORQUE_LIMIT_NM = 1.0
 DEFAULT_CONTACT_SOLREF = [0.02, 1.0]
 DEFAULT_CONTACT_SOLIMP = [0.9, 0.95, 0.001, 0.5, 2.0]
 
@@ -59,6 +69,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch1-run", type=Path, action="append", default=[])
     parser.add_argument("--batch2-run", type=Path, action="append", default=[])
     parser.add_argument("--wheel-width-m", type=float)
+    parser.add_argument(
+        "--torque-limit-nm",
+        type=float,
+        default=DEFAULT_TORQUE_LIMIT_NM,
+        help=(
+            "Per-wheel actuator torque envelope written into the model's ctrlrange. "
+            "This is a reviewed operating limit, not an identified motor capability: "
+            "Batch 1 only records whatever hard cap the bench firmware happened to "
+            "run with, which is far below what the hub motors can deliver."
+        ),
+    )
     parser.add_argument("--validate-mujoco", action="store_true")
     parser.add_argument("--replay-batch2", action="store_true")
     parser.add_argument(
@@ -105,6 +126,7 @@ def build_seeded_model(args: argparse.Namespace) -> dict[str, Any]:
         measurements=measurements,
         aggregate=aggregate,
         wheel_width_m=args.wheel_width_m,
+        torque_limit_nm=args.torque_limit_nm,
     )
 
     selected_json = out_dir / "selected_runs.json"
@@ -430,6 +452,7 @@ def build_seeded_measurements(
     measurements: dict[str, Any],
     aggregate: dict[str, Any],
     wheel_width_m: float | None,
+    torque_limit_nm: float = DEFAULT_TORQUE_LIMIT_NM,
 ) -> dict[str, Any]:
     seeded = copy.deepcopy(measurements)
     seeded.setdefault("schema_version", 1)
@@ -457,11 +480,18 @@ def build_seeded_measurements(
             raise BuildSeededModelError(f"wheels.{side}.radius_m is required from measurements")
         wheel.setdefault("gear_ratio", provenance(1.0, "ratio", "measured"))
         actuator = aggregate["actuators"][side]
+        if torque_limit_nm <= 0.0:
+            raise BuildSeededModelError("--torque-limit-nm must be > 0")
         wheel["torque_limit_nm"] = provenance(
-            actuator["torque_limit_nm"],
+            torque_limit_nm,
             "N*m",
-            "moteus",
-            "Median Batch 1 firmware hard cap from off-ground sysid.",
+            "reviewed",
+            (
+                "Reviewed operating envelope, not an identified capability. Batch 1 "
+                f"only observed the bench firmware's own hard cap "
+                f"({actuator['torque_limit_nm']} N*m), which is well below both the "
+                "hub motors' capability and the torque needed to balance."
+            ),
         )
         wheel["command_sign"] = provenance(
             actuator["command_sign"],

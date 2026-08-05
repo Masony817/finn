@@ -55,6 +55,14 @@ def sha256_12(path: Path) -> str:
 # including it here creates an uncontrollable integrator in the generated model.
 STATE_NAMES = ("pitch_rad", "pitch_rate_rad_s", "forward_vel_m_s")
 
+# The authored model rest pose leaves the tires a few millimetres above the floor.
+# Every experiment below must start in ground contact instead: a robot in free fall
+# feels no gravity torque about its COM, so pitch produces no pitch acceleration and
+# the identified plant loses the inverted-pendulum mode entirely.  Settling with the
+# base orientation held fixed lets the contact reach its equilibrium penetration
+# without the chassis tipping away from the operating point we are linearizing about.
+SETTLE_STEPS = 50
+
 
 class LqrSimError(Exception):
     """Expected failure with a concise user-facing message."""
@@ -77,6 +85,7 @@ class SimConfig:
     position_hold_kp_s: float
     max_position_correction_m_s: float
     linearization_torque_eps_nm: float
+    linearization_vel_eps_m_s: float
     fall_pitch_rad: float
     pitch_axis: int
     pitch_sign: float
@@ -101,6 +110,8 @@ class ModelHandles:
     wheel_left_vel_adr: int
     wheel_right_pos_adr: int
     wheel_right_vel_adr: int
+    left_tire_geom_id: int
+    right_tire_geom_id: int
     wheel_radius_m: float
     torque_limit_nm: float
 
@@ -224,6 +235,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.15,
         help="Maximum velocity correction contributed by the outer position loop.",
     )
+    parser.add_argument(
+        "--linearization-vel-eps-m-s",
+        type=float,
+        default=0.05,
+        help=(
+            "Finite forward-velocity perturbation used to identify the velocity "
+            "columns of A.  Must sit above the wheels' dry-friction band or the "
+            "identified plant describes stiction rather than rolling dynamics."
+        ),
+    )
     parser.add_argument("--fall-pitch-rad", type=float, default=0.45)
     parser.add_argument(
         "--linearization-torque-eps-nm",
@@ -333,6 +354,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         position_hold_kp_s=args.position_hold_kp_s,
         max_position_correction_m_s=args.max_position_correction_m_s,
         linearization_torque_eps_nm=args.linearization_torque_eps_nm,
+        linearization_vel_eps_m_s=args.linearization_vel_eps_m_s,
         fall_pitch_rad=args.fall_pitch_rad,
         pitch_axis=args.pitch_axis,
         pitch_sign=args.pitch_sign,
@@ -396,6 +418,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         },
         "linearization": {
             "torque_eps_nm": config.linearization_torque_eps_nm,
+            "vel_eps_m_s": config.linearization_vel_eps_m_s,
             "a_matrix": a_matrix.tolist(),
             "b_matrix": b_matrix.tolist(),
             "closed_loop_eigs": [
@@ -533,6 +556,10 @@ def inspect_model(model: mujoco.MjModel) -> ModelHandles:
     wheel_right_pos_adr, _ = sensor_adr_dim(model, "wheel_right_pos")
     wheel_right_vel_adr, _ = sensor_adr_dim(model, "wheel_right_vel")
 
+    left_tire_geom_id = require_id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_tire_collision")
+    right_tire_geom_id = require_id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_tire_collision")
+    require_floor_plane_at_origin(model)
+
     left_range = model.actuator_ctrlrange[left_actuator_id]
     right_range = model.actuator_ctrlrange[right_actuator_id]
     if not np.allclose(left_range, right_range):
@@ -557,9 +584,23 @@ def inspect_model(model: mujoco.MjModel) -> ModelHandles:
         wheel_left_vel_adr=wheel_left_vel_adr,
         wheel_right_pos_adr=wheel_right_pos_adr,
         wheel_right_vel_adr=wheel_right_vel_adr,
+        left_tire_geom_id=left_tire_geom_id,
+        right_tire_geom_id=right_tire_geom_id,
         wheel_radius_m=wheel_radius(model),
         torque_limit_nm=abs(float(left_range[1])),
     )
+
+
+def require_floor_plane_at_origin(model: mujoco.MjModel) -> None:
+    """Ground settling measures tire height against z=0, so verify the floor is there."""
+
+    floor_id = require_id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    if int(model.geom_type[floor_id]) != int(mujoco.mjtGeom.mjGEOM_PLANE):
+        raise LqrSimError("expected the 'floor' geom to be a plane")
+    if not math.isclose(float(model.geom_pos[floor_id][2]), 0.0, abs_tol=1e-9):
+        raise LqrSimError(
+            f"expected the floor plane at z=0, found z={float(model.geom_pos[floor_id][2])}"
+        )
 
 
 def estimate_balance_trim_pitch_rad(model: mujoco.MjModel) -> float:
@@ -629,6 +670,8 @@ def validate_linearization_torque(config: SimConfig, handles: ModelHandles) -> N
         raise LqrSimError(
             f"linearization torque {eps} exceeds actuator limit {handles.torque_limit_nm}"
         )
+    if config.linearization_vel_eps_m_s <= 0.0:
+        raise LqrSimError("--linearization-vel-eps-m-s must be positive")
 
 
 def calibrated_estimator(
@@ -651,11 +694,22 @@ def linearize_balance_dynamics(
 
     A textbook LQR starts from analytical equations.  For Finn's generated model,
     the safer first pass is to ask MuJoCo for the local dynamics of the exact XML
-    you will simulate.  The perturbations below are deliberately small for state
-    and finite for torque because the seeded wheel joints include dry friction.
+    you will simulate.
+
+    Perturbation size is a physical choice here, not a numerical one.  The seeded
+    wheel joints carry ~0.24 N*m of dry friction, and any probe small enough to
+    stay inside that band measures stiction instead of dynamics.  The torque probe
+    has always been finite for this reason; the forward-velocity probe needs the
+    same treatment, because below roughly 0.01 m/s the wheels never break away and
+    the model reports velocity collapsing by half every tick.  Pitch and pitch rate
+    are flat across four decades of perturbation once the tires are on the ground,
+    so those stay small.
     """
 
-    state_eps = np.array([1e-3, 1e-3, 1e-3], dtype=float)
+    state_eps = np.array(
+        [1e-3, 1e-3, config.linearization_vel_eps_m_s],
+        dtype=float,
+    )
     zero_state = np.zeros(len(STATE_NAMES), dtype=float)
 
     a_matrix = np.zeros((len(STATE_NAMES), len(STATE_NAMES)), dtype=float)
@@ -679,7 +733,31 @@ def linearize_balance_dynamics(
             "or revisit wheel friction/contact parameters"
         )
 
+    require_controllable(a_matrix, b_matrix)
     return a_matrix, b_matrix
+
+
+def require_controllable(a_matrix: np.ndarray, b_matrix: np.ndarray) -> None:
+    """Reject a plant the LQR cannot actually stabilize in every state direction.
+
+    An uncontrollable direction leaves a closed-loop pole wherever the open-loop
+    plant put it.  When that pole sits on the unit circle the rollout still looks
+    stable while forward position random-walks, which is exactly what a
+    free-falling linearization produces.  Catch it here rather than shipping the
+    gain to hardware.
+    """
+
+    order = len(STATE_NAMES)
+    controllability = np.hstack(
+        [np.linalg.matrix_power(a_matrix, k) @ b_matrix for k in range(order)]
+    )
+    rank = int(np.linalg.matrix_rank(controllability))
+    if rank < order:
+        raise LqrSimError(
+            f"linearized plant is uncontrollable (rank {rank} of {order}). The identified "
+            "dynamics cannot be stabilized in every state direction; check that the robot "
+            "is in ground contact and that the model's balance dynamics are present."
+        )
 
 
 def simulate_one_control_tick(
@@ -704,11 +782,32 @@ def set_reduced_state(
     config: SimConfig,
     state: np.ndarray,
 ) -> None:
-    """Set a robot-readable initial condition.
+    """Set a robot-readable initial condition with the tires on the ground.
 
     This function is allowed to touch MuJoCo qpos/qvel because it prepares a
     simulation experiment.  The controller itself never sees these internals.
+
+    The base height is not taken from the model's authored rest pose: that pose
+    floats the tires above the floor, and every experiment started from it would
+    run in free fall.  Instead the chassis is settled onto the floor once at this
+    attitude, and the commanded state is then re-applied at the settled height.
     """
+
+    apply_reduced_state(model, data, handles, state, base_z_m=None)
+    base_z_m = settle_base_height_m(model, data, handles, state)
+    apply_reduced_state(model, data, handles, state, base_z_m=base_z_m)
+    require_ground_contact(data)
+
+
+def apply_reduced_state(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    handles: ModelHandles,
+    state: np.ndarray,
+    *,
+    base_z_m: float | None,
+) -> None:
+    """Write the full reduced state into qpos/qvel, optionally overriding base height."""
 
     pitch_rad, pitch_rate_rad_s, forward_vel_m_s = state
     forward_pos_m = 0.0
@@ -718,6 +817,8 @@ def set_reduced_state(
     # The freejoint position keeps the chassis above the wheels.  We move x with
     # wheel odometry so the visual/root pose and encoder pose start consistent.
     data.qpos[0] = forward_pos_m
+    if base_z_m is not None:
+        data.qpos[2] = base_z_m
 
     # A world-Y rotation appears as local IMU X pitch after subtracting the
     # neutral IMU orientation.  This was verified against the generated model.
@@ -731,14 +832,65 @@ def set_reduced_state(
     wheel_rad = forward_pos_m / handles.wheel_radius_m
     wheel_rad_s = forward_vel_m_s / handles.wheel_radius_m
 
-    # Sign-corrected forward convention: right wheel positive and left wheel
-    # negative correspond to forward motion for the current generated model.
-    data.qpos[handles.left_wheel_qposadr] = -wheel_rad
-    data.qpos[handles.right_wheel_qposadr] = wheel_rad
-    data.qvel[handles.left_wheel_dofadr] = -wheel_rad_s
-    data.qvel[handles.right_wheel_dofadr] = wheel_rad_s
+    # Sign-corrected forward convention: left wheel positive and right wheel
+    # negative roll the generated model toward world +x.  Verified by rolling the
+    # joints directly against world displacement, not assumed from the mirroring
+    # (see tests/test_run_lqr_sim_smoke.py::test_odometry_forward_sign_matches_world_motion).
+    data.qpos[handles.left_wheel_qposadr] = wheel_rad
+    data.qpos[handles.right_wheel_qposadr] = -wheel_rad
+    data.qvel[handles.left_wheel_dofadr] = wheel_rad_s
+    data.qvel[handles.right_wheel_dofadr] = -wheel_rad_s
 
     mujoco.mj_forward(model, data)
+
+
+def settle_base_height_m(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    handles: ModelHandles,
+    state: np.ndarray,
+) -> float:
+    """Return the base height at which the tires rest on the floor at this attitude.
+
+    Lowering the chassis to exact tangency is not enough: MuJoCo only generates a
+    contact once the geometries actually overlap, and the resting penetration is a
+    property of the contact solver, not something worth hard-coding.  So we drop the
+    tires to tangency and let the model settle, holding the base orientation fixed so
+    the inverted pendulum cannot tip away from the attitude being prepared.
+    """
+
+    data.qpos[2] -= lowest_tire_gap_m(model, data, handles)
+    mujoco.mj_forward(model, data)
+
+    quat = np.array(data.qpos[3:7], dtype=float)
+    for _ in range(SETTLE_STEPS):
+        mujoco.mj_step(model, data)
+        data.qpos[3:7] = quat
+        data.qvel[3:6] = 0.0
+    return float(data.qpos[2])
+
+
+def lowest_tire_gap_m(model: mujoco.MjModel, data: mujoco.MjData, handles: ModelHandles) -> float:
+    """Signed distance from the lowest tire surface down to the floor plane."""
+
+    return min(
+        float(data.geom_xpos[geom_id][2]) - handles.wheel_radius_m
+        for geom_id in (handles.left_tire_geom_id, handles.right_tire_geom_id)
+    )
+
+
+def require_ground_contact(data: mujoco.MjData) -> None:
+    """Fail loudly if an experiment is about to run with the robot in the air.
+
+    A floating start silently removes the inverted-pendulum mode from every
+    finite-difference measurement taken from this state.
+    """
+
+    if data.ncon == 0:
+        raise LqrSimError(
+            "robot is not touching the ground after settling; the identified plant "
+            "would be a free-falling body with no balance dynamics"
+        )
 
 
 def discrete_lqr(
@@ -893,9 +1045,16 @@ def step_control_tick(model: mujoco.MjModel, data: mujoco.MjData, config: SimCon
 
 
 def signed_forward_wheel_rad(left_rad: float, right_rad: float) -> float:
-    """Average wheel rotation after converting each encoder to forward-positive."""
+    """Average wheel rotation after converting each encoder to forward-positive.
 
-    return 0.5 * (right_rad - left_rad)
+    The generated model mirrors the left wheel joint, so the two raw joint
+    coordinates run opposite each other.  Rolling the joints directly shows that
+    left-positive / right-negative carries the chassis toward world +x, so that is
+    the combination that means "forward" here.  Getting this backwards inverts the
+    velocity feedback term and turns the balance loop into positive feedback.
+    """
+
+    return 0.5 * (left_rad - right_rad)
 
 
 def axis_angle_quat(*, axis: int, angle: float) -> np.ndarray:

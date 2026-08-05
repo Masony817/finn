@@ -95,10 +95,12 @@ wheels:
       source: measured
       notes: Wheel assembly mass.
     torque_limit_nm:
-      value: 0.25
+      value: 1.0
       unit: N*m
-      source: moteus
-      notes: Median Batch 1 firmware hard cap from off-ground sysid.
+      source: reviewed
+      notes: Reviewed operating envelope, not an identified capability. Batch 1 only
+        observed the bench firmware's own hard cap (0.25 N*m), which is well below
+        both the hub motors' capability and the torque needed to balance.
     gear_ratio:
       value: 1.0
       unit: ratio
@@ -142,10 +144,12 @@ wheels:
       source: measured
       notes: Wheel assembly mass.
     torque_limit_nm:
-      value: 0.25
+      value: 1.0
       unit: N*m
-      source: moteus
-      notes: Median Batch 1 firmware hard cap from off-ground sysid.
+      source: reviewed
+      notes: Reviewed operating envelope, not an identified capability. Batch 1 only
+        observed the bench firmware's own hard cap (0.25 N*m), which is well below
+        both the hub motors' capability and the torque needed to balance.
     gear_ratio:
       value: 1.0
       unit: ratio
@@ -202,7 +206,7 @@ contact:
       notes: Provisional seed default. Do not treat as identified contact compliance.
 seed_metadata:
   source: tools/build_seeded_mujoco_model.py
-  generated_at: '20260627_194520'
+  generated_at: '20260805_183353'
   selected_runs:
     batch1:
     - run_dir: logs/finn-mcu/sysid/batch_1_pass/20260615_150912

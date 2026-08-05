@@ -30,7 +30,19 @@ wheel_odometry:
   encoder_directions_bench_verified: false
 
   # The generated MuJoCo joints use opposite raw coordinates. Convert both to
-  # forward-positive before comparing them with physical telemetry.
+  # forward-positive before comparing them with physical telemetry. These signs
+  # are what Scopik applies to the simulated wheel sensors, and Batch 2 replay
+  # error confirms them empirically.
+  #
+  # Do not confuse these with the sim's own joint-to-world-+x mapping, which is
+  # the opposite pairing: rolling the model's joints shows left-positive /
+  # right-negative carries the chassis toward world +x. That mapping is what the
+  # LQR estimator's odometry uses, it is asserted in
+  # tests/test_run_lqr_sim_smoke.py::test_odometry_forward_sign_matches_world_motion,
+  # and it was inverted in tools/run_lqr_sim.py until 2026-08-05 -- which fed the
+  # velocity feedback term with the wrong sign and made the balance loop diverge.
+  # The two differ because the physical encoder directions below are still an
+  # assumption; the Stage 1 bench check is what reconciles them.
   sim_left_joint_to_forward_sign: -1
   sim_right_joint_to_forward_sign: 1
 

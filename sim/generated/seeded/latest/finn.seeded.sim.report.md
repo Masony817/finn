@@ -11,7 +11,7 @@
 - robot_sha256: `5f6efd330880e4f90dd55f0cedcf454640507549607517dc8a8347013dfbdcfa`
 - scene_sha256: `89402558d8c14cec25d80d707238bdd4679cb2d03deae2740c4df397a81d4c57`
 - config_sha256: `9bee25e0d508273d1e2ba68235594842f72ff06dbf8bd16e912f3bdfbdfc83ce`
-- measurements_sha256: `2fb41ccf879d78afed42ff43c41d85c61c60abbf4f993c41b893cf2694efec78`
+- measurements_sha256: `eed45ac84e7b11befb13326a1758e1865f2ac3917a9644c5193862d73fb6491b`
 - onshape_url: `https://cad.onshape.com/documents/ed1c90944582329b3a0c4b53/w/ef6c6e50f2f631eadb017a5a/e/35effa0e1acd53deffeb4bb9`
 
 ## Inspection
@@ -27,7 +27,7 @@
 ## Measurements Used
 - wheels.left.radius_m: `0.081` m (source: `measured`)
 - wheels.left.width_m: `0.053` m (source: `measured`)
-- wheels.left.torque_limit_nm: `0.25` N*m (source: `moteus`)
+- wheels.left.torque_limit_nm: `1.0` N*m (source: `reviewed`)
 - wheels.left.gear_ratio: `1.0` ratio (source: `measured`)
 - wheels.left.command_sign: `-1` sign (source: `moteus`)
 - wheels.left.damping: `0.00410667` N*m*s/rad (source: `moteus`)
@@ -36,7 +36,7 @@
 - wheels.left.mass_kg: `2.1` kg (source: `measured`)
 - wheels.right.radius_m: `0.081` m (source: `measured`)
 - wheels.right.width_m: `0.053` m (source: `measured`)
-- wheels.right.torque_limit_nm: `0.25` N*m (source: `moteus`)
+- wheels.right.torque_limit_nm: `1.0` N*m (source: `reviewed`)
 - wheels.right.gear_ratio: `1.0` ratio (source: `measured`)
 - wheels.right.command_sign: `1` sign (source: `moteus`)
 - wheels.right.damping: `0.00441399` N*m*s/rad (source: `moteus`)
@@ -53,7 +53,7 @@
 - removed_actuators: `[{'tag': 'position', 'name': 'left_wheel', 'joint': 'left_wheel'}, {'tag': 'position', 'name': 'right_wheel', 'joint': 'right_wheel'}]`
 - updated_joints: `[{'wheel': 'left', 'joint': 'left_wheel', 'damping': 0.00410667, 'armature': 0.0, 'frictionloss': 0.115429}, {'wheel': 'right', 'joint': 'right_wheel', 'damping': 0.00441399, 'armature': 0.0, 'frictionloss': 0.126772}]`
 - updated_inertials: `[{'wheel': 'left', 'body': 'left_wheel', 'mass_kg': 2.1}, {'wheel': 'right', 'body': 'right_wheel', 'mass_kg': 2.1}]`
-- added_actuators: `[{'name': 'motor_left_wheel', 'joint': 'left_wheel', 'gear': -1.0, 'ctrlrange': [-0.25, 0.25]}, {'name': 'motor_right_wheel', 'joint': 'right_wheel', 'gear': 1.0, 'ctrlrange': [-0.25, 0.25]}]`
+- added_actuators: `[{'name': 'motor_left_wheel', 'joint': 'left_wheel', 'gear': -1.0, 'ctrlrange': [-1.0, 1.0]}, {'name': 'motor_right_wheel', 'joint': 'right_wheel', 'gear': 1.0, 'ctrlrange': [-1.0, 1.0]}]`
 - added_collision_geoms: `[{'name': 'left_tire_collision', 'body': 'left_wheel', 'type': 'cylinder', 'condim': 6, 'radius_m': 0.081, 'half_width_m': 0.0265}, {'name': 'right_tire_collision', 'body': 'right_wheel', 'type': 'cylinder', 'condim': 6, 'radius_m': 0.081, 'half_width_m': 0.0265}]`
 - added_sensors: `[{'tag': 'gyro', 'name': 'imu_gyro', 'target': 'imu'}, {'tag': 'accelerometer', 'name': 'imu_accelerometer', 'target': 'imu'}, {'tag': 'framequat', 'name': 'imu_quat', 'target': None}, {'tag': 'framepos', 'name': 'base_pos', 'target': None}, {'tag': 'framequat', 'name': 'base_quat', 'target': None}, {'tag': 'jointpos', 'name': 'wheel_left_pos', 'target': 'left_wheel'}, {'tag': 'jointvel', 'name': 'wheel_left_vel', 'target': 'left_wheel'}, {'tag': 'jointpos', 'name': 'wheel_right_pos', 'target': 'right_wheel'}, {'tag': 'jointvel', 'name': 'wheel_right_vel', 'target': 'right_wheel'}]`
 - scene: `{'compiler_meshdir': '../../../model/finn/assets', 'visual_merged': True, 'assets_merged': 3, 'worldbody_children_merged': 2}`

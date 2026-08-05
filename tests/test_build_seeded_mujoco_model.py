@@ -275,6 +275,7 @@ def test_report_only_writes_bundle_and_does_not_write_model(tmp_path: Path):
         batch1_run=[],
         batch2_run=[],
         wheel_width_m=None,
+        torque_limit_nm=bsm.DEFAULT_TORQUE_LIMIT_NM,
         validate_mujoco=False,
         replay_batch2=False,
         report_only=True,

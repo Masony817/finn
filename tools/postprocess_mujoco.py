@@ -17,7 +17,11 @@ from typing import Any
 
 import yaml
 
-ALLOWED_SOURCES = {"measured", "cad", "moteus", "estimated", "todo"}
+# "reviewed" marks a deliberate engineering limit rather than an observation of the
+# robot: an operating envelope somebody chose and signed off on. It is distinct from
+# "estimated", which is a placeholder standing in for a measurement nobody has taken
+# yet, and so it stays allowed in strict mode.
+ALLOWED_SOURCES = {"measured", "cad", "moteus", "reviewed", "estimated", "todo"}
 STRICT_BLOCKED_SOURCES = {"estimated", "todo"}
 TODO_STRINGS = {"", "todo", "tbd", "unknown", "null", "none"}
 
