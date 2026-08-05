@@ -875,7 +875,7 @@ def estimate_loaded_radius(rows: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         t_f, a_f, om_f = t[finite], a_imu[finite], omega_avg[finite]
         alpha = np.gradient(om_f, t_f)
-        mask = np.abs(alpha) > 0.5  # rad/s² — ignore near-constant-velocity windows
+        mask = np.abs(alpha) > 0.5  # rad/s^2; ignore near-constant-velocity windows
         if int(np.sum(mask)) < 3:
             continue
         r_samples = np.abs(a_f[mask] / alpha[mask])

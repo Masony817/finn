@@ -1,5 +1,3 @@
-#blanket git ingore for now made by my good friend claude ai
-
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -17,13 +15,11 @@ __pycache__/
 .venv/
 venv/
 env/
-# Keep uv.lock committed for reproducible installs across Mac + Linux.
-# Do NOT add uv.lock here.
+# uv.lock stays committed for reproducible installs across Mac and Linux.
 
 # ---- Editors / OS ----
-# Ignore .vscode contents but allow the shared editor config through. Use
-# `.vscode/*` (not `.vscode/`) so the `!` re-includes work -- git won't descend
-# into a fully-excluded directory.
+# `.vscode/*` not `.vscode/`: git will not descend into a fully-excluded
+# directory, so the re-includes below would never match.
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
@@ -53,12 +49,10 @@ checkpoints/
 *.ckpt
 *.onnx
 *.safetensors
-# Allow small reference weights if you ever commit one intentionally:
 !checkpoints/.gitkeep
 
 # ---- Data / logs ----
-# Telemetry from bench runs, sysid captures, etc.
-# Keep these OUT of git. Use LFS or external storage for canonical reference logs.
+# Bench and sysid telemetry. Use LFS or external storage for reference logs.
 data/
 logs/
 *.csv
@@ -69,7 +63,6 @@ logs/
 *.tfrecord
 *.bag
 *.rrd
-# Allow tiny example/fixture data for tests:
 !tests/**/*.csv
 !tests/**/fixtures/**
 
@@ -80,7 +73,6 @@ logs/
 *.gif
 *.mp4
 *.mov
-# But keep docs/build-log images and brand assets:
 !docs/**/*.png
 !docs/**/*.jpg
 !docs/**/*.gif
@@ -88,7 +80,7 @@ logs/
 !assets/**
 
 # ---- CAD / 3D / mesh outputs ----
-# Big binary geometry. Either use Git LFS or link to Onshape and keep these out.
+# Big binary geometry. Use Git LFS or link to Onshape instead.
 *.stl
 *.STL
 *.step
@@ -102,19 +94,14 @@ logs/
 *.sldasm
 *.x_t
 *.x_b
-# Slicer output
 *.gcode
 *.3mf.gcode
-# Finn's reference collision/visual meshes are small and committed so the sim
-# works on a fresh clone. Keep them despite the blanket *.stl ignore above.
+# Finn's meshes are small and committed so the sim runs on a fresh clone.
 !sim/model/finn/assets/*.stl
 
 # ---- Sim / robotics artifacts ----
-# Generated URDFs, meshes pulled by onshape-to-robot, MuJoCo caches.
-# Generated sim output is disposable EXCEPT the committed seed-model bundle that
-# run_lqr_sim.py and the MuJoCo tools load by default -- keep that one subtree so
-# the sim runs on a fresh clone. Use single-level `/*` globs (not `/**`) so git
-# can re-include the nested `latest/` path.
+# Generated sim output is disposable except the seeded bundle the sim loads by
+# default. Single-level `/*` globs, not `/**`, or git cannot re-include `latest/`.
 sim/generated/*
 !sim/generated/seeded
 sim/generated/seeded/*
@@ -125,7 +112,6 @@ mujoco_log.txt
 isaac_sim_logs/
 
 # ---- Firmware build output ----
-# PlatformIO / Arduino / Teensy build artifacts
 .pio/
 .pioenvs/
 .piolibdeps/
@@ -137,7 +123,6 @@ build/
 *.bin
 *.map
 *.lst
-# Keep firmware source under firmware/ tracked, just ignore build artifacts above
 
 # ---- Misc ----
 *.log

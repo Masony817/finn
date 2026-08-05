@@ -21,14 +21,12 @@ def main():
 
     results = []
 
-    # core stack
     print("core stack:")
     results.append(check("numpy", lambda: importlib.import_module("numpy").__version__))
     results.append(check("scipy", lambda: importlib.import_module("scipy").__version__))
     results.append(check("matplotlib", lambda: importlib.import_module("matplotlib").__version__))
     results.append(check("yaml", lambda: importlib.import_module("yaml").__version__))
 
-    # lqr sanity check
     print("\ncontrol math:")
 
     def lqr_check():
@@ -63,7 +61,6 @@ def main():
     except ImportError:
         print("  SKIP  moteus not installed (run `uv sync --extra hardware` to add)")
 
-    # sim
     print("\nsim:")
 
     def mujoco_check():
@@ -78,7 +75,6 @@ def main():
 
     results.append(check("mujoco", mujoco_check))
 
-    # torch (only if ml optional dep installed)
     print("\nml (optional, requires --extra ml):")
     try:
         import torch  # pyright: ignore[reportMissingImports] -- torch is optional for now
@@ -96,7 +92,6 @@ def main():
     except ImportError:
         print("  SKIP  torch not installed (run `uv sync --extra ml` to add)")
 
-    # summary
     print()
     failed = sum(1 for r in results if r is False)
     if failed:

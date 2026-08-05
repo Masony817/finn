@@ -6,7 +6,7 @@ Every robotics project with a simulator eventually asks the same three questions
 *how wrong is my model, where in the run does it diverge, and is it getting better as I
 tune it?* Answering them usually means a pile of private matplotlib scripts. scopik is
 that pile, done once, properly: bring a MuJoCo model, a robot log, and a ~40-line YAML
-profile — get a scrubbable dashboard and a tracked gap history.
+profile - get a scrubbable dashboard and a tracked gap history.
 
 ```sh
 scopik gap --profile config/viz/finn.yaml --run logs/finn-mcu/sysid/batch_2_pass/<ts>
@@ -29,19 +29,19 @@ sim-to-real gap  (5 signals, model: .../finn.seeded.sim.xml)
 through the MuJoCo model (each command held for the real inter-sample interval), samples
 the model's sensors on the real run's own timestamps, and logs everything to Rerun:
 
-- **Overlay charts** — real and sim in the same plot per compared signal.
-- **Residual + rolling RMSE** — model error *localized in time*. A residual spike at
+- **Overlay charts** - real and sim in the same plot per compared signal.
+- **Residual + rolling RMSE** - model error *localized in time*. A residual spike at
   breakaway points at stiction; error during a PRBS segment points at inertia or
   damping; drift during coastdown points at friction.
-- **Events and phases** — lifecycle events and phase-column changes as timeline
+- **Events and phases** - lifecycle events and phase-column changes as timeline
   annotations, so a 10-minute sysid run is navigable by segment.
-- **Summary** — per-signal RMSE / MAE / max-error table, in the viewer and as
+- **Summary** - per-signal RMSE / MAE / max-error table, in the viewer and as
   `scopik_gap.json` next to the run.
-- **Deterministic diagnosis** — per phase and signal, compute bias, RMS, gain,
+- **Deterministic diagnosis** - per phase and signal, compute bias, RMS, gain,
   correlation, and lag. Unsupported gain/lag estimates are written as `null`
   instead of being inferred from quiet sensor noise; findings aggregate the
   strongest patterns without requiring an LLM.
-- **Gap history** — each run appends one JSON line (timestamp, model hash, per-signal
+- **Gap history** - each run appends one JSON line (timestamp, model hash, per-signal
   metrics) to `<profile>_gap_history.jsonl`. Tune the model, rerun, watch the numbers
   move. This is the regression-tracking habit that makes the gap actually close.
 
@@ -66,12 +66,12 @@ opt-in answers for both:
 **Gravity in accelerometers.** A MuJoCo accelerometer reports *specific force*
 (gravity included) in the sensor's site frame; real IMUs typically report
 gravity-removed linear acceleration. `gravity_compensated: true` on a replay sample
-subtracts the gravity-reaction term using the site's live orientation each frame —
+subtracts the gravity-reaction term using the site's live orientation each frame -
 correct at any attitude, not just upright. On finn this took the forward-acceleration
 "gap" from a meaningless 9.7 m/s² (≈ g) to a real 0.16 m/s².
 
 **Externally supported runs.** If the real robot was on a gantry or stand during the
-recording, the bare model has no such support — an unbalanced model simply falls over
+recording, the bare model has no such support - an unbalanced model simply falls over
 during open-loop replay, and every comparison is polluted by fall dynamics.
 `hold_upright: <free_joint>` models an ideally stiff support: roll and pitch are
 projected out every physics step; yaw and translation stay free. The summary panel
@@ -137,7 +137,7 @@ scopik gap --profile P.yaml --run RUN_DIR      # open the native viewer (default
     --history H.jsonl     gap history path; --no-history to skip
 ```
 
-Recordings (`.rrd`) open with `rerun file.rrd` or the web viewer — that's the
+Recordings (`.rrd`) open with `rerun file.rrd` or the web viewer - that's the
 share-a-run story: send the file, the recipient scrubs the same dashboard.
 
 For a Finn-specific physical interpretation, invoke `finn-gap-review` in Codex

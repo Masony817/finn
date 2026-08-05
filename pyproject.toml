@@ -4,16 +4,11 @@ version = "0.1.0"
 description = "FINN: self-balancing two-wheeled humanoid"
 requires-python = ">=3.11"
 dependencies = [
-    # core stack
     "numpy>=1.26",
     "scipy>=1.12",          # lqr
     "matplotlib>=3.8",
     "pyyaml>=6.0",
-
-    # sim
     "mujoco>=3.1",
-
-    # visualization (workspace member: packages/scopik)
     "scopik",
 ]
 
@@ -37,7 +32,7 @@ dev = [
 [tool.uv.workspace]
 members = ["packages/scopik"]
 
-# CUDA wheels on Linux only. macOS gets default Pytorch (MPS on Apple Silicon).
+# CUDA wheels on Linux only; macOS uses default PyTorch (MPS on Apple Silicon).
 [tool.uv.sources]
 scopik = { workspace = true }
 torch = [
@@ -64,6 +59,6 @@ exclude = [
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-# Environment smoke-check: LQR uses conventional uppercase matrix names
-# (A, B, Q, R, P, K), and one inline MuJoCo XML string is intentionally long.
+# LQR uses conventional uppercase matrix names, and one inline MuJoCo XML
+# string is intentionally long.
 "tools/check_env.py" = ["N806", "E501"]

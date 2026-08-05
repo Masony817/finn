@@ -30,7 +30,7 @@ def _args(**overrides) -> argparse.Namespace:
 def test_classify_line_pass_only_from_pending():
     args = _args()
     assert slc.classify_line("event,2,batch1_complete,complete,x", "pending", args) == "pass"
-    # a pass marker after we've already left pending must not override
+    # a pass marker after the run has left pending must not override
     assert slc.classify_line("event,2,batch1_complete,complete,x", "fail", args) == "fail"
 
 
@@ -940,11 +940,6 @@ def test_run_postprocess_tolerates_stray_braces(tmp_path: Path):
     assert rc == 0
 
 
-# ---------------------------------------------------------------------------
-# Batch 2 postprocessor — new functions added in the batch-1-priors wiring pass
-# ---------------------------------------------------------------------------
-
-
 def _make_batch1_priors_dict(
     left_friction: float = 0.115,
     right_friction: float = 0.127,
@@ -1091,13 +1086,10 @@ def test_decompose_losses_separates_motor_and_tire():
     mass_kg = 8.0
     j_wheel = 0.004
     m_eff = mass_kg + 2 * j_wheel / radius_m**2
-    # Motor params (per wheel)
     motor_friction_nm = 0.12
     motor_damping = 0.004
-    # Convert to linear
     motor_friction_accel = 2 * motor_friction_nm / (radius_m * m_eff)
     motor_damping_s = 2 * motor_damping / (radius_m**2 * m_eff)
-    # Add a known tire contribution
     tire_friction_accel = 0.15
     tire_damping_s = 0.05
     total_friction = motor_friction_accel + tire_friction_accel
@@ -1233,7 +1225,6 @@ def test_mujoco_params_controlled_validation_cannot_proceed_without_radius():
 def test_lqr_readiness_has_batch2_schema_false_for_wrong_schema(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    # Write a file with the wrong schema tag
     (run_dir / "telemetry.csv").write_text("schema,batch2_unknown\n")
     (run_dir / "events.log").write_text("")
 

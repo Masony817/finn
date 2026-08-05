@@ -1,27 +1,11 @@
-# Normalize to LF in the repository. Nothing tracked here has CRLF today, so
-# this costs nothing now and keeps a Windows contributor from renormalizing the
-# whole tree later.
 * text=auto eol=lf
 
-# ---- Generated artifacts ----
-# These are emitted by a generator, never hand-written, and a textual 3-way
-# merge of two different generator outputs produces a file no generator ever
-# emitted -- an MJCF the sim silently mis-simulates, or a controller header
-# whose gain matches no validated run.
-#
-# `merge=binary` makes git keep the current branch's version and declare a
-# conflict instead of interleaving hunks or writing conflict markers into the
-# file. The resolution is always: take one side wholesale, re-run the generator,
-# commit that. See the generated-artifact rule in CLAUDE.md.
-#
-# `linguist-generated=true` collapses them in GitHub diffs and drops them from
-# the repo's language stats, so review stays on the sources.
-sim/generated/seeded/latest/**                              merge=binary linguist-generated=true
+# Generated artifacts. A textual 3-way merge of two generator outputs yields a
+# file no generator emitted: an MJCF the sim mis-simulates, or a gain header
+# matching no validated run. merge=binary keeps one side and conflicts instead.
+# Resolve by re-running the generator, never hunk by hunk.
+sim/generated/seeded/latest/**                               merge=binary linguist-generated=true
 firmware/finn-mcu/control/04_lqr_balance/lqr_seeded_config.h merge=binary linguist-generated=true
+uv.lock                                                      merge=binary linguist-generated=true
 
-# Resolver output. Regenerate with `uv lock`, never hand-merge.
-uv.lock                                                     merge=binary linguist-generated=true
-
-# ---- Binary assets ----
-# Reference collision/visual meshes. Committed so the sim runs on a fresh clone.
 *.stl binary

@@ -298,7 +298,6 @@ def analyze(
                 )
             )
 
-        # Whole-run bias domination.
         if overall_rms > 1e-12 and abs(overall_bias) > 0.7 * overall_rms:
             pair_findings.append(
                 Finding(

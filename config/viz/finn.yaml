@@ -1,12 +1,7 @@
 # scopik profile for finn Batch 2 (loaded-ground) telemetry.
 #
-# Usage:
-#   uv run scopik gap --profile config/viz/finn.yaml \
-#       --run logs/finn-mcu/sysid/batch_2_pass/<timestamp>
-#
-# The compare set mirrors tools/build_seeded_mujoco_model.py replay_batch2_open_loop
-# (same sensors, same rev/s units) so scopik's RMSE numbers are directly checkable
-# against sim/generated/seeded/latest/validation.json.
+# The compare set mirrors build_seeded_mujoco_model.py replay_batch2_open_loop, so
+# these RMSE numbers are checkable against seeded/latest/validation.json.
 
 name: finn
 model: ../../sim/generated/seeded/latest/finn.seeded.sim.xml
@@ -29,27 +24,22 @@ events:
   phase_column: phase
 
 signals:
-  # attitude
   pitch_rad:                {unit: rad,   group: attitude}
   pitch_rate_rad_s:         {unit: rad/s, group: attitude}
   yaw_rad:                  {unit: rad,   group: attitude}
   yaw_rate_rad_s:           {unit: rad/s, group: attitude}
-  # wheels
   left_pos_rev:             {unit: rev,   group: wheels}
   right_pos_rev:            {unit: rev,   group: wheels}
   left_vel_rev_s:           {unit: rev/s, group: wheels}
   right_vel_rev_s:          {unit: rev/s, group: wheels}
-  # commands and measured torque
   left_cmd_nm:              {unit: "N·m", group: commands}
   right_cmd_nm:             {unit: "N·m", group: commands}
   left_torque_nm:           {unit: "N·m", group: commands}
   right_torque_nm:          {unit: "N·m", group: commands}
-  # imu
   imu_gyro_x_rad_s:         {unit: rad/s, group: imu}
   imu_gyro_y_rad_s:         {unit: rad/s, group: imu}
   imu_gyro_z_rad_s:         {unit: rad/s, group: imu}
   robot_forward_accel_m_s2: {unit: "m/s²", group: imu}
-  # health
   left_voltage_v:           {unit: V,     group: health}
   right_voltage_v:          {unit: V,     group: health}
   left_temp_c:              {unit: "°C",  group: health}

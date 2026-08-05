@@ -20,7 +20,9 @@ hardware tuned**; the robot has not balanced unsupported yet. That single fact
 drives most of the rules below.
 
 Read `README.md` for the user-facing story and `docs/real_lqr_bringup.md` before
-touching anything on the hardware path.
+touching anything on the hardware path. `docs/codebase-notes.md` collects the
+cross-cutting gotchas: signal frames, MuJoCo sensor semantics, the telemetry
+contract.
 
 ## Repo map
 
@@ -110,7 +112,7 @@ Short LQR captures are the next controlled dataset.
 3. **Safety gates are load-bearing, not friction.** The firmware refuses to arm
    until the two `*_bench_verified` flags in the conventions file are true and the
    header has been rebuilt. `lqr_safety_config.h` holds separately reviewed
-   physical limits. Do not flip a flag, widen a limit, raise the 0.25 N.m torque
+   physical limits. Do not flip a flag, widen a limit, raise the torque
    cap, or lengthen `kFirstTrialDurationMs` on an agent's own initiative - those
    are the user's calls, made from evidence.
 4. **Raw telemetry stays out of git.** `logs/`, `*.csv`, `*.rrd`, `*.png`, and
@@ -170,8 +172,8 @@ constexpr float kMoteusWatchdogTimeoutS = 0.05f;  // 5x the 100 Hz control perio
 # mjpython needs a framework Python; uv's standalone build hides the shared library.
 ```
 
-One carve-out, and it is narrow: physical provenance in `sim/config/finn_measurements.yaml`
-and `config/finn_conventions.yaml` is data, not commentary. A measured constant's
+One carve-out, and it is narrow: physical provenance in `sim/config/finn_measurements.yaml`,
+`config/finn_conventions.yaml`, and `lqr_safety_config.h` is data, not commentary. A measured constant's
 justification cannot be moved into the code, because the constant *is* the code, so
 it belongs in the schema's `notes:` field or beside the value it justifies and the
 length rule does not apply. Do not strip sign, bug, or measurement provenance from

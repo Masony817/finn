@@ -256,7 +256,7 @@ _MESH_ASSETS_PRESENT = (ROOT / "sim" / "model" / "finn" / "assets" / "motues_bra
 
 @pytest.mark.skipif(
     not _MESH_ASSETS_PRESENT,
-    reason="STL mesh assets not present — run onshape-to-robot to generate them",
+    reason="STL mesh assets not present; run onshape-to-robot to generate them",
 )
 def test_generated_xml_compiles_with_mujoco(tmp_path):
     pytest.importorskip("mujoco")

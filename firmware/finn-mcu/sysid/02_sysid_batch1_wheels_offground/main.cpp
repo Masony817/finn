@@ -66,7 +66,7 @@ Moteus::Options moteusOptions(const int8_t id) {
   return options;
 }
 
-// which fields we actually send in a position command + their wire precision
+// Fields actually sent in a position command, and their wire precision.
 Moteus::PositionMode::Format torqueCommandFormat() {
   Moteus::PositionMode::Format format;
   format.position = Moteus::kFloat;
@@ -179,7 +179,6 @@ constexpr size_t kDynamicSegmentCount = kDirectionCount * (sizeof(kDynamicTorque
 constexpr size_t kCoastSegmentCount = kDirectionCount * (sizeof(kCoastTargetsRevS) / sizeof(kCoastTargetsRevS[0])) * 3;
 constexpr size_t kBatch1SegmentCount = 1 + kSignSegmentCount + kBreakawaySegmentCount + kDynamicSegmentCount + kCoastSegmentCount + 1;
 
-// run-state
 SystemState state = SystemState::kSafeIdle;
 size_t active_segment_index = 0; //which segment is running
 uint32_t batch_start_ms = 0; //top-level run timeout anchor

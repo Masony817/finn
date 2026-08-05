@@ -24,7 +24,6 @@ uint8_t active_imu_addr = 0;
 uint32_t active_i2c_clock_hz = 0;
 
 void halt_blink(const char* reason) {
-    // failture indicator
     Serial.println("\nHalting execution: " + String(reason));
     while (true) {
         digitalWrite(LED_BUILTIN, HIGH);
@@ -56,7 +55,6 @@ bool is_bno08x_address(uint8_t addr) {
 }
 
 bool scan_i2c(uint32_t clock_hz) {
-    // Scan the I2C bus for devices, looking for either valid BNO08x address.
     Wire.setClock(clock_hz);
     Serial.printf("Scanning I2C on SDA %u / SCL %u at %lu Hz...\n",
                   IMU_SDA_PIN, IMU_SCL_PIN, static_cast<unsigned long>(clock_hz));
@@ -171,7 +169,8 @@ bool init_imu() {
     return false;
 }
 
-// testing can with a probe transmit - wont be acked by anything but the controller should at least send it out without error 
+// Nothing acks this probe. A successful queue is the only signal available
+// with no second node on the bus.
 bool init_can_and_probe() {
     Serial.println("Initializing CAN bus...");
     can3.begin();
@@ -181,7 +180,6 @@ bool init_can_and_probe() {
     can3.enableFIFOInterrupt();
     Serial.printf(" Controller init OK. ");
 
-    // probe message
     CAN_message_t msg;
     msg.id = CAN_TX_TEST_ID;
     msg.len = 1;
@@ -250,13 +248,11 @@ void loop() {
                               millis(), q.real, q.i, q.j, q.k, q.accuracy);
             }
         } else {
-            // catch any other sensor IDs that might be arriving
             Serial.printf("debug: non-rotation event, sensorId=0x%02X\n", sensor_value.sensorId);
         }
         watchdog_timer = 0;
     }
 
-    // if no events at all for 2 seconds, something is wrong
     if (watchdog_timer >= WATCHDOG_MS) {
         Serial.printf("warning: No IMU events in %lums (addr=0x%02X clock=%lu total=%lu rotation=%lu)\n",
                       WATCHDOG_MS, active_imu_addr,

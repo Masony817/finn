@@ -1,12 +1,7 @@
 name: CI
 
-# Two independent gates:
-#   - python:   host-side lint, format, and tests for the harness/tools/sim code
-#   - firmware: compile + static-analyze the MCU code for the real Teensy target
-#
-# Both auto-discover new work, so adding a test or a firmware sketch needs no
-# changes here: pytest finds new tests, ruff lints the whole repo, and the
-# firmware job builds every [env:*] declared in platformio.ini.
+# Both jobs auto-discover new work: adding a test or a firmware sketch needs no
+# edits here.
 
 on:
   push:
@@ -59,10 +54,8 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
       - name: Build + static-check every firmware environment
-        # Compiling for board=teensy41 is the hardware-fidelity gate: it fails on
-        # library/API drift and on flash/RAM overflow. cppcheck (high severity)
-        # catches memory/undefined-behavior defects. Environments are read from
-        # platformio.ini so new sketches are covered with no edits here.
+        # Compiling for the real board is what catches library drift and
+        # flash/RAM overflow; a host build would not.
         run: |
           set -euo pipefail
           envs=$(grep -oE '^\[env:[^]]+\]' platformio.ini | sed -E 's/\[env:(.+)\]/\1/')

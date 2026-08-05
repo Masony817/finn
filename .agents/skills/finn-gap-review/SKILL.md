@@ -52,9 +52,9 @@ Append normal history only when the user intends the run to become a recorded ba
 
 Lead with a one-sentence verdict, then use exactly these sections:
 
-1. `Good` — evidence that agrees, is repeatable, or clears a concern.
-2. `Issues` — each item includes signal, phase family, numeric evidence, interpretation, and confidence (`high`, `medium`, or `low`).
-3. `Next change` — one parameter family, its source file or generation path, expected directional effect, rebuild/rerun command, and a falsifiable success criterion.
-4. `Boundary` — the strongest conclusion this run cannot support.
+1. `Good` - evidence that agrees, is repeatable, or clears a concern.
+2. `Issues` - each item includes signal, phase family, numeric evidence, interpretation, and confidence (`high`, `medium`, or `low`).
+3. `Next change` - one parameter family, its source file or generation path, expected directional effect, rebuild/rerun command, and a falsifiable success criterion.
+4. `Boundary` - the strongest conclusion this run cannot support.
 
 Prefer “inspect X next” over “tune X” when evidence is not identifiable. Never invent a numeric parameter adjustment from residual metrics alone.
