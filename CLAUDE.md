@@ -38,7 +38,6 @@ packages/scopik/            standalone sim-to-real gap profiler on Rerun (uv wor
 config/
   finn_conventions.yaml     sign/frame contract shared by model, Scopik, and firmware
   viz/                      Scopik profiles: finn.yaml (Batch 2), finn_lqr.yaml (LQR replay)
-  moteus-cali/              motor calibration logs
 tests/                      pytest for host tools and cross-artifact contracts
 docs/                       operator procedures
 .agents/skills/             canonical, harness-neutral agent skills
@@ -96,11 +95,15 @@ Short LQR captures are the next controlled dataset.
 
 ## Hard rules
 
-1. **Never hand-edit generated artifacts.** That means
-   `sim/generated/seeded/latest/*` and
-   `firmware/finn-mcu/control/04_lqr_balance/lqr_seeded_config.h`. Change a source
-   measurement, derived sysid output, or config, then regenerate. The generated
-   header is written only by a passing `run_lqr_sim.py --firmware-header` run.
+1. **Never hand-edit generated artifacts, and never hand-merge them.** That means
+   `sim/generated/seeded/latest/*`, `lqr_seeded_config.h`, and `uv.lock`. Change a
+   source measurement, derived sysid output, or config, then regenerate. The
+   generated header is written only by a passing `run_lqr_sim.py --firmware-header`
+   run. `.gitattributes` marks these `merge=binary`, so a merge conflict keeps the
+   current branch's version and writes no conflict markers. Resolve it by taking
+   one side wholesale and re-running the generator, then commit that output. Never
+   resolve hunk by hunk: a hand-stitched MJCF or gain header is a state no
+   generator ever emitted, and it will simulate or actuate as if it were validated.
 2. **`config/finn_conventions.yaml` is the sign contract**, shared by MuJoCo,
    Scopik, and firmware. If a sign looks wrong, fix it there and regenerate
    downstream; do not add a compensating negation at a call site.
@@ -170,6 +173,18 @@ YAML with `schema_version` at the top. Measurement entries carry
 `moteus`, `estimated`, `todo`. Strict mode rejects `estimated` and `todo`, which
 is how placeholders are kept out of the generated model. Never upgrade a `source`
 label to make a build pass.
+
+## Branching
+
+- `main` is the public working state. It advances when a robot or sim milestone is
+  actually validated, not on a time box. Its invariant is the fresh-clone path:
+  clone, `uv sync --extra dev`, `run_lqr_sim.py` runs, which
+  `tests/test_run_lqr_sim_smoke.py` guards. Do not force-push it.
+- `dev` is the integration branch. Feature branches merge here first.
+- `feature/<topic>` branches off `dev` and stays **short-lived**. This is not
+  style: two long-lived branches that each regenerate the seed model or the gain
+  header collide under hard rule 1, and the only correct fix is to rebuild after
+  merging. Rebase or merge from `dev` often, and regenerate rather than reconcile.
 
 ## Testing and CI
 
