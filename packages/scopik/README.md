@@ -147,7 +147,25 @@ to re-estimate time-series features.
 
 ## Scope
 
-Scopik currently does one job: recorded open-loop sim-to-real comparison. Finn's
-capture tools write complete logs first, then invoke this command after the motors
-are stopped. Live streaming, generic plugins, and 3D reconstruction stay out until
-a real robot workflow requires them.
+Scopik's main job is recorded open-loop sim-to-real comparison. Finn's capture
+tools write complete logs first, then invoke `scopik gap` after the motors are
+stopped. Generic plugins and 3D reconstruction stay out until a real robot
+workflow requires them.
+
+Live streaming was in that same holding pattern until teleop needed it. Driving a
+balancing robot by hand is a workflow a post-hoc gap report cannot serve, so
+`scopik.live` exists now:
+
+```python
+from scopik.live import LiveSession
+
+session = LiveSession.from_columns({"attitude": ("pitch_rad", "yaw_rate_rad_s")})
+session.spawn()                      # or .save(path) for CI
+session.log_row(time_s, row)         # once per control tick
+session.close()
+```
+
+It is deliberately much smaller than the gap pipeline: no profile, no model, no
+comparison, just named scalars on a shared timeline. A missing column is skipped
+rather than raised, because a live sink must never be able to interrupt the
+control loop feeding it. `tools/drive_lqr_sim.py` is the reference caller.

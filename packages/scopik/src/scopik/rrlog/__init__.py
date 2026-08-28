@@ -54,3 +54,22 @@ def sink_serve() -> str:
 
 def set_time(time_s: float) -> None:
     rr.set_time(TIMELINE, duration=time_s)
+
+
+def declare_series(entity_path: str, display_name: str, color: tuple[int, int, int]) -> None:
+    rr.log(entity_path, rr.SeriesLines(names=display_name, colors=color), static=True)
+
+
+def log_scalar(entity_path: str, value: float) -> None:
+    """Log one sample at the current time. Paired with set_time() for live streams.
+
+    Distinct from rrlog.series.log_series, which sends a finished run as columns.
+    A live stream has no columns yet: the point is that the sample arrives while
+    the robot is still moving.
+    """
+
+    rr.log(entity_path, rr.Scalars(value))
+
+
+def disconnect() -> None:
+    rr.disconnect()
