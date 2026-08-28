@@ -8,6 +8,7 @@ apart -- on a fresh clone in CI, not to assert controller quality.
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 from pathlib import Path
 
@@ -130,6 +131,10 @@ def _sim_config(args, handles, model):
         pitch_axis=args.pitch_axis,
         pitch_sign=args.pitch_sign,
         forward_sign=args.forward_sign,
+        yaw_axis=args.yaw_axis,
+        yaw_sign=args.yaw_sign,
+        yaw_left_actuator_sign=rls.yaw_left_actuator_sign(args),
+        drive=rls.drive_limits_from_args(args),
     )
 
 
@@ -200,3 +205,132 @@ def test_firmware_header_is_exported_from_a_passing_sim(tmp_path: Path):
     assert "kRealLeftEncoderForwardSign = 1.0f" in text
     assert "kPitchDirectionBenchVerified = false" in text
     assert "kWheelEncoderDirectionsBenchVerified = false" in text
+
+
+# ---------------------------------------------------------------------------
+# The command layer sits above the balance loop. These tests hold that boundary:
+# balance must not depend on a command source, and no command source may cost it.
+# docs/codebase-notes.md states the invariants these are named for.
+# ---------------------------------------------------------------------------
+
+
+def _rollout(command_source=None, duration_s: float = 2.0):
+    model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
+    handles = rls.inspect_model(model)
+    args = rls.parse_args(["--model", str(MODEL), "--duration-s", str(duration_s)])
+    config = _sim_config(args, handles, model)
+    estimator = rls.calibrated_estimator(model, handles, config)
+    a_matrix, b_matrix = rls.linearize_balance_dynamics(model, handles, estimator, config)
+    gain = rls.discrete_lqr(
+        a_matrix,
+        b_matrix,
+        rls.np.diag(rls.np.array(args.q_diag, dtype=float)),
+        rls.np.array([[float(args.r)]]),
+    )
+    a_yaw, b_yaw = rls.linearize_yaw_dynamics(model, handles, estimator, config)
+    gain_yaw = float(
+        rls.discrete_lqr(
+            rls.np.array([[a_yaw]]),
+            rls.np.array([[b_yaw]]),
+            rls.np.array([[float(args.q_yaw)]]),
+            rls.np.array([[float(args.r_yaw)]]),
+        ).item()
+    )
+    return rls.run_closed_loop(
+        model,
+        handles,
+        estimator,
+        config,
+        gain,
+        gain_yaw=gain_yaw,
+        command_source=command_source,
+    )
+
+
+def test_balance_runs_identically_with_no_command_source():
+    """Invariant 1: the balance loop is complete without anything above it.
+
+    An explicit stop command and no command source at all must produce the same
+    rollout, which is what lets the generated firmware header keep being exported
+    from the plain station-keeping path.
+    """
+
+    without, _ = _rollout(command_source=None)
+    with_stop, _ = _rollout(command_source=lambda _t: rls.DriveCommand(0.0, 0.0))
+
+    assert len(without) == len(with_stop)
+    for left, right in zip(without, with_stop, strict=True):
+        assert left == right
+
+
+def test_positive_yaw_torque_turns_the_model_left():
+    """Pin the steering sign against physics, not against the actuator names.
+
+    The generated model names its wheel bodies opposite the robot frame, so a sign
+    read off `motor_left_wheel` turns left into right. Balance never noticed
+    because both wheels get the same torque. Same failure class as the odometry
+    sign inversion above.
+    """
+
+    model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
+    handles = rls.inspect_model(model)
+    args = rls.parse_args(["--model", str(MODEL)])
+    config = _sim_config(args, handles, model)
+    estimator = rls.calibrated_estimator(model, handles, config)
+
+    data = rls.mujoco.MjData(model)
+    rls.set_reduced_state(model, data, handles, config, rls.np.zeros(3))
+    start_quat = rls.np.array(data.qpos[3:7])
+    for _ in range(40):
+        rls.apply_differential_torque(data, handles, config, 0.3)
+        rls.step_control_tick(model, data, config)
+
+    relative = rls.quat_mul(rls.quat_conj(start_quat), rls.np.array(data.qpos[3:7]))
+    world_yaw_rad = float(rls.quat_to_rotvec(relative)[2])
+
+    assert world_yaw_rad > 0.01, "positive yaw torque must rotate the model counter-clockwise"
+    assert estimator.yaw_rate_rad_s(data) > 0.0, "the estimator must agree with world yaw"
+
+
+def test_identified_yaw_plant_is_a_damped_integrator():
+    model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
+    handles = rls.inspect_model(model)
+    args = rls.parse_args(["--model", str(MODEL)])
+    config = _sim_config(args, handles, model)
+    estimator = rls.calibrated_estimator(model, handles, config)
+
+    a_yaw, b_yaw = rls.linearize_yaw_dynamics(model, handles, estimator, config)
+
+    assert 0.0 < a_yaw <= 1.0, "a yawing robot only ever loses rate to friction"
+    assert b_yaw > 0.0, "positive yaw torque must raise the yaw rate"
+
+
+def test_balance_survives_a_hostile_command_source():
+    """Invariants 2 and 3: a command source cannot take the robot down.
+
+    Whatever a tenant does -- raise, emit NaN, or demand far outside the envelope
+    -- the arbiter turns it into no-command or a clamped command, and the balance
+    loop underneath keeps its footing.
+    """
+
+    def raises(_time_s):
+        raise RuntimeError("policy crashed")
+
+    def not_finite(_time_s):
+        return rls.DriveCommand(float("nan"), float("inf"))
+
+    def absurd(_time_s):
+        return rls.DriveCommand(1e6, -1e6)
+
+    def wrong_type(_time_s):
+        return (1.0, 2.0)
+
+    for source in (raises, not_finite, absurd, wrong_type):
+        rows, metrics = _rollout(command_source=source)
+
+        assert not metrics["fell"], f"{source.__name__} toppled the robot"
+        assert metrics["finite"], f"{source.__name__} produced non-finite state"
+        assert metrics["max_abs_wheel_cmd_nm"] <= 1.0 + 1e-9, (
+            f"{source.__name__} escaped the torque envelope"
+        )
+        assert all(math.isfinite(row["left_cmd_nm"]) for row in rows)

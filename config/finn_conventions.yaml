@@ -16,11 +16,17 @@ imu:
   yaw_sign: 1
   forward_accel_sign: -1
   pitch_direction_bench_verified: false
+  yaw_direction_bench_verified: false
   notes: >-
     Hold Finn with motors stopped before the first balance run. Zero the robot
     mechanically upright, tip the top forward, and confirm pitch_rad and
     pitch_rate_rad_s increase. The active LQR firmware refuses to run until
     this flag is set true and its generated header is rebuilt.
+  yaw_notes: >-
+    Same held, motors-stopped check for the steering channel: rotate Finn to the
+    left (counter-clockwise seen from above) and confirm yaw_rate_rad_s goes
+    positive. yaw_direction_bench_verified gates the drive layer the way
+    pitch_direction_bench_verified gates balance.
 
 wheel_odometry:
   # Moteus telemetry is already forward-normalized on the physical robot:
@@ -57,3 +63,32 @@ actuation:
     Batch 1 and Batch 2 used equal-sign commands for straight motion. The
     opposite MuJoCo gears come from the mirrored simulated joint coordinates;
     they are not extra signs to apply to the physical moteus commands.
+
+yaw:
+  # Positive yaw is counter-clockwise seen from above, so it turns Finn left.
+  positive_is: ccw_from_above
+
+  # Steering is a differential torque laid on top of the common balance torque.
+  # These signs say which actuator receives +tau_yaw for a positive (left) yaw;
+  # the other receives its negation.
+  #
+  # The sim sign is -1 because the generated model's wheel bodies are named
+  # opposite the robot frame: motor_left_wheel drives the wheel at world y = -0.009
+  # and motor_right_wheel the one at y = +0.508, while robot +y is left. The naming
+  # comes from the CAD export and is harmless for balance, where both wheels get the
+  # same torque, so nothing caught it until steering needed the two to differ.
+  # tests/test_run_lqr_sim_smoke.py::test_positive_yaw_torque_turns_the_model_left
+  # pins this against measured model response rather than against the names.
+  #
+  # The real sign lands on -1 too, but by a different route, so do not read the
+  # two as one fact. The physical robot is not mirrored and its controllers are
+  # labelled correctly; -1 is simply what turning left takes, since the left wheel
+  # has to drive backward while the right drives forward. That reasoning is still
+  # unverified on hardware, which is what yaw_direction_bench_verified gates.
+  sim_left_actuator_yaw_sign: -1
+  real_left_actuator_yaw_sign: -1
+  notes: >-
+    No track-width value appears in the steering controller. The three available
+    numbers disagree -- 0.517 m from CAD body origins, 0.583 m between compiled
+    tire contact patches, and 0.351 m from the gantry-biased Batch 2 yaw response
+    -- so the yaw plant is identified numerically from the model instead.

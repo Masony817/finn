@@ -14,6 +14,9 @@ CONVENTIONS = ROOT / "config" / "finn_conventions.yaml"
 MODEL = ROOT / "sim" / "generated" / "seeded" / "latest" / "finn.seeded.sim.xml"
 HEADER = ROOT / "firmware" / "finn-mcu" / "control" / "04_lqr_balance" / "lqr_seeded_config.h"
 FIRMWARE = ROOT / "firmware" / "finn-mcu" / "control" / "04_lqr_balance" / "main.cpp"
+SAFETY_HEADER = (
+    ROOT / "firmware" / "finn-mcu" / "control" / "04_lqr_balance" / "lqr_safety_config.h"
+)
 PLATFORMIO = ROOT / "firmware" / "finn-mcu" / "platformio.ini"
 
 
@@ -60,3 +63,58 @@ def test_real_lqr_environment_keeps_the_reviewed_safety_interlocks():
     assert 'latchFault("control_deadline_missed")' in firmware
     assert "kWheelEncoderDirectionsBenchVerified" in firmware
     assert 'printEvent("lqr_complete", reason)' in firmware
+
+
+def test_generated_header_tracks_the_yaw_sign_contract():
+    conventions = yaml.safe_load(CONVENTIONS.read_text(encoding="utf-8"))
+    header = HEADER.read_text(encoding="utf-8")
+
+    assert header_value("kYawSign", header) == f"{float(conventions['imu']['yaw_sign'])}f"
+    assert (
+        header_value("kRealLeftActuatorYawSign", header)
+        == f"{float(conventions['yaw']['real_left_actuator_yaw_sign'])}f"
+    )
+    assert (
+        header_value("kYawDirectionBenchVerified", header)
+        == str(conventions["imu"]["yaw_direction_bench_verified"]).lower()
+    )
+
+
+def test_the_drive_envelope_reaches_the_firmware_header():
+    """Steering constants have to travel the same generated path as the gain.
+
+    The firmware does not consume these yet. Exporting them now is what keeps the
+    later port a firmware-only change instead of a second place to tune a robot.
+    """
+
+    header = HEADER.read_text(encoding="utf-8")
+
+    for name in (
+        "kGainYawRate",
+        "kMaxForwardVelMS",
+        "kMaxYawRateRadS",
+        "kDriveAccelLimitMS2",
+        "kDriveYawAccelLimitRadS2",
+        "kCommandTimeoutMs",
+        "kRefPositionBandM",
+    ):
+        header_value(name, header)
+
+
+def test_the_command_timeout_absorbs_dropped_messages_at_the_host_command_rate():
+    """The command timeout and the heartbeat fault cover different failures.
+
+    Losing the serial link is the heartbeat's job, and at 300 ms it cuts the
+    motors long before any ramp could matter. What the command timeout covers is
+    the link staying healthy while whatever produces commands -- teleop, or later
+    a policy -- stalls. That has room to degrade gracefully, so the timeout is
+    sized to ride out a few missed messages at the 10 Hz host command rate and
+    then ramp the drive to zero with the robot still balancing.
+    """
+
+    header = HEADER.read_text(encoding="utf-8")
+    command_timeout_ms = float(header_value("kCommandTimeoutMs", header).rstrip("UL"))
+    host_command_period_ms = 100.0
+
+    assert command_timeout_ms >= 3 * host_command_period_ms
+    assert command_timeout_ms <= 10 * host_command_period_ms

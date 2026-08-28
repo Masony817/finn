@@ -18,6 +18,8 @@ yet. The interlocks here reduce the cost of a mistake; they do not make a fallin
   separately reviewed physical safety limits.
 - `config/viz/finn_lqr.yaml` tells Scopik how to replay a recorded LQR command
   trace through the free model.
+- `tools/drive_lqr_sim.py` drives the same validated controller around from the
+  keyboard or a scripted profile. Sim only; see Stage 3.
 
 The controller state is `[pitch, pitch_rate, forward_velocity]`. Positive robot
 X is forward, positive Y is left, and positive Z is up. Both physical wheel
@@ -60,7 +62,7 @@ alone.
 
 ## Stage 1: motor-disabled convention check
 
-The committed firmware deliberately refuses to arm because the two hands-on
+The committed firmware deliberately refuses to arm because its two hands-on
 convention flags start as `false`. Flash and capture the check:
 
 ```bash
@@ -76,20 +78,27 @@ With Finn held and the motors stopped:
    positive.
 4. Roll each wheel by hand in the direction that would drive the robot forward.
    Both reported wheel velocities must become positive.
-5. Let the 15 second check finish. The run is saved under
+5. Rotate Finn to the left, counter-clockwise seen from above. `yaw_rate_rad_s`
+   must become positive. This one gates steering rather than balance, so it can
+   be deferred, but it costs nothing to do in the same 15 second window.
+6. Let the 15 second check finish. The run is saved under
    `logs/finn-mcu/lqr/lqr_convention_check_pass/`.
 
-If either sign is wrong, update the corresponding sign in
+If a sign is wrong, update the corresponding sign in
 `config/finn_conventions.yaml`, rerun the sim/export command so the motor-disabled
-firmware receives the correction, repeat the check, and do not arm. When both
-observations are correct, set these two fields to `true`:
+firmware receives the correction, repeat the check, and do not arm. When the
+observations are correct, set the matching fields to `true`:
 
 ```yaml
 imu:
   pitch_direction_bench_verified: true
+  yaw_direction_bench_verified: true      # steering only
 wheel_odometry:
   encoder_directions_bench_verified: true
 ```
+
+The first and third gate arming at all. The yaw flag gates only the drive layer,
+which no firmware consumes yet.
 
 Then rerun the 30 second sim/export command. That is the only supported way to
 open the firmware arm gate.
@@ -150,3 +159,35 @@ the absolute correlation for that phase is below `0.6`.
 Only lengthen `kFirstTrialDurationMs`, relax a safety limit, or raise the torque
 cap after repeated short trials show the expected sign, strong real/sim
 correlation, acceptable lag, and no unexplained saturation or drift.
+
+## Stage 3: driving, and why it is not wired up yet
+
+`tools/drive_lqr_sim.py` drives the balancing model around from WASD, and
+`run_lqr_sim.py --firmware-header` already exports the steering gain and the whole
+command envelope into `lqr_seeded_config.h`. The firmware does not read any of it.
+That is deliberate, and it is not a small amount of missing work being glossed
+over -- it is three separate gates, in order:
+
+1. **Finn has not balanced unsupported yet.** Both arming flags above are still
+   `false`. Steering a robot that has not stood up is not a meaningful experiment.
+2. **The reviewed safety envelope forbids driving, correctly.**
+   `kMaxWheelTravelRev = 2.0` faults at about 1.02 m of travel and
+   `kFirstTrialDurationMs = 3000` ends the trial at 3 s, so any real drive attempt
+   trips a limit within a second or two. Driving needs its own reviewed limit
+   block, set from evidence produced by short balance trials, not from the sim.
+3. **`kMaxAbsPitchRad = 10 degrees` caps sustained acceleration** at
+   `g*tan(10 deg) = 1.73 m/s^2` no matter what the command layer allows. The
+   sim's 0.5 m/s^2 slew limit is chosen to sit well inside that, leaning about
+   2.9 degrees and leaving the rest for disturbance rejection.
+
+When those clear, the firmware port is mechanical, because the layering already
+matches: `runControllerTick()` is already always-on and already independent of
+serial input. What it needs is a command arbiter struct beside
+`last_target_forward_vel_m_s`, `sendBalanceTorque` widened to
+`sendWheelTorques(tau_common, tau_yaw)` using the same headroom allocation, a
+`DRIVE <v> <w>` branch in `handleCommand` (the first numeric parsing in any sketch
+in this repo), and a `schema,lqr_v2` bump with `config/viz/finn_lqr.yaml` updated
+in the same commit. Note the two `SetPosition` calls already cost up to 6 ms of the
+10 ms control budget; steering changes their values, not their count.
+
+`docs/codebase-notes.md` states the layer invariants the port has to preserve.

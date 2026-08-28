@@ -21,8 +21,8 @@ drives most of the rules below.
 
 Read `README.md` for the user-facing story and `docs/real_lqr_bringup.md` before
 touching anything on the hardware path. `docs/codebase-notes.md` collects the
-cross-cutting gotchas: signal frames, MuJoCo sensor semantics, the telemetry
-contract.
+cross-cutting gotchas: signal frames, MuJoCo sensor semantics, the control layer
+invariants, the steering signs, and the telemetry contract.
 
 ## Repo map
 
@@ -35,7 +35,7 @@ sim/
   model/finn/               hand-authored MJCF (finn_robot.xml, scene.xml) + STL assets
   config/                   finn_measurements.yaml (source of truth), mujoco_postprocess.yaml
   generated/seeded/latest/  committed seed-model bundle the sim and firmware export load
-tools/                      host Python: seed-model build, LQR sim, MuJoCo postprocess, env check
+tools/                      host Python: seed-model build, LQR sim and teleop, postprocess, env check
 packages/scopik/            standalone sim-to-real gap profiler on Rerun (uv workspace member)
 config/
   finn_conventions.yaml     sign/frame contract shared by model, Scopik, and firmware
@@ -58,6 +58,8 @@ uv run ruff check . && uv run ruff format .
 uv run pytest -q                          # host tests (root tests/ + packages/scopik/tests/)
 
 uv run python tools/run_lqr_sim.py                       # closed-loop LQR rollout -> logs/lqr_sim/<ts>/
+uv run python tools/make_balance_demo.py                 # shove-and-recover demo -> chart PNG + GIF
+uv run python tools/drive_lqr_sim.py --drive-profile square --no-viewer   # scripted drive
 uv run python tools/build_seeded_mujoco_model.py --auto-select-latest 3
 uv run scopik gap --profile config/viz/finn.yaml --run <run_dir>
 
@@ -71,6 +73,12 @@ the shared library uv's standalone build does not expose:
 uv run --isolated --python /opt/homebrew/bin/python3 \
   mjpython tools/run_lqr_sim.py --viewer --duration-s 30
 ```
+
+`drive_lqr_sim.py` needs the same framework Python to read the keyboard, since it
+drives from the viewer's key callback. Hold a key to drive; prefer the arrow keys,
+since MuJoCo binds a shortcut to every letter and W and S also toggle wireframe
+and shadow. It opens a live Scopik dashboard by
+default; pass `--no-scopik` to skip it, or `--scopik-rrd PATH` to record instead.
 
 On Linux, `uv run python tools/run_lqr_sim.py --viewer` is enough.
 
@@ -110,19 +118,25 @@ Short LQR captures are the next controlled dataset.
    Scopik, and firmware. If a sign looks wrong, fix it there and regenerate
    downstream; do not add a compensating negation at a call site.
 3. **Safety gates are load-bearing, not friction.** The firmware refuses to arm
-   until the two `*_bench_verified` flags in the conventions file are true and the
-   header has been rebuilt. `lqr_safety_config.h` holds separately reviewed
+   until the two arming `*_bench_verified` flags in the conventions file are true
+   and the header has been rebuilt. A third flag gates steering only. `lqr_safety_config.h` holds separately reviewed
    physical limits. Do not flip a flag, widen a limit, raise the torque
    cap, or lengthen `kFirstTrialDurationMs` on an agent's own initiative - those
    are the user's calls, made from evidence.
-4. **Raw telemetry stays out of git.** `logs/`, `*.csv`, `*.rrd`, `*.png`, and
+4. **Steering, teleop, and any future policy go through the command layer, never
+   the torque path.** The balance loop runs every tick whether or not a command
+   arrives; a command source may only return a bounded `DriveCommand` that moves a
+   reference. Yaw spends the torque headroom balance leaves behind, never balance's
+   own. Read the layer invariants in `docs/codebase-notes.md` before adding a
+   tenant, and add a test named for the invariant you rely on.
+5. **Raw telemetry stays out of git.** `logs/`, `*.csv`, `*.rrd`, `*.png`, and
    most binary/CAD formats are gitignored. The committed seed bundle and small
    test fixtures are the deliberate exceptions; check `.gitignore` before adding
    a file type.
-5. **Don't claim a parameter is identified from a signal that does not excite it
+6. **Don't claim a parameter is identified from a signal that does not excite it
    independently.** Replay is an open-loop, onboard-signal comparison: it says
    nothing about world trajectory, slip, or free-balance transfer.
-6. **One coupled parameter family per iteration**, unless the effects are
+7. **One coupled parameter family per iteration**, unless the effects are
    independently observable.
 
 ## Comments
@@ -198,8 +212,9 @@ those files to satisfy this section.
 
 A real installed package (`src/` layout, console script `scopik`), deliberately
 robot-agnostic and deliberately narrow: recorded, open-loop sim-to-real gap
-analysis. Adapting it to a robot means writing a YAML profile, not editing the
-package. All Rerun API usage is confined to `src/scopik/rrlog/`; keep it there so
+analysis, plus `scopik.live` for streaming named scalars to Rerun while a robot
+is still running. Adapting it to a robot means writing a YAML profile, not editing
+the package. All Rerun API usage is confined to `src/scopik/rrlog/`; keep it there so
 SDK churn stays local. Rerun is pinned `>=0.34,<0.35`.
 
 Before adding a feature, check that a robot milestone actually needs it - plugin

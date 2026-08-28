@@ -23,4 +23,18 @@ constexpr bool kWheelEncoderDirectionsBenchVerified = false;
 constexpr float kRealLeftCommonTorqueSign = 1.0f;
 constexpr float kRealRightCommonTorqueSign = 1.0f;
 constexpr bool kPitchDirectionBenchVerified = false;
+
+// Steering and the command layer above the always-on balance loop.
+// Firmware that ignores everything below still balances as validated.
+constexpr int kYawAxis = 1;
+constexpr float kYawSign = 1.0f;
+constexpr float kGainYawRate = 5.71421979f;
+constexpr float kRealLeftActuatorYawSign = -1.0f;
+constexpr float kMaxForwardVelMS = 0.6f;
+constexpr float kMaxYawRateRadS = 1.0f;
+constexpr float kDriveAccelLimitMS2 = 0.5f;
+constexpr float kDriveYawAccelLimitRadS2 = 3.0f;
+constexpr unsigned long kCommandTimeoutMs = 500UL;
+constexpr float kRefPositionBandM = 0.3f;
+constexpr bool kYawDirectionBenchVerified = false;
 }  // namespace FinnLqrSeeded
