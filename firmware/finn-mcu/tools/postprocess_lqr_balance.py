@@ -207,6 +207,34 @@ def read_seeded_header(path: Path) -> dict[str, float]:
 # ------------------------------------------------------------------ integrity
 
 
+def rotation_vector_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """How often a fused quaternion actually arrived.
+
+    `imu_ok` is `isImuAlive()` and reads true on any report, so a dead rotation
+    vector hides behind a healthy gyro stream. `isImuFresh()` gates arming on the
+    quaternion alone, so this is the number that decides whether Finn can arm.
+    """
+
+    if len(rows) < 2:
+        return {"arrivals": 0, "rate_hz": None, "max_age_ms": None}
+    arrivals: list[float] = []
+    for row in rows:
+        stamp_us = row.get("t_us", math.nan) - row.get("imu_age_us", math.nan)
+        if not math.isfinite(stamp_us):
+            continue
+        stamp_s = stamp_us / 1e6
+        if not arrivals or abs(stamp_s - arrivals[-1]) > 0.05:
+            arrivals.append(stamp_s)
+    span_s = (rows[-1]["t_us"] - rows[0]["t_us"]) / 1e6
+    ages = [r.get("imu_age_ms", math.nan) for r in rows]
+    finite_ages = [a for a in ages if math.isfinite(a)]
+    return {
+        "arrivals": len(arrivals),
+        "rate_hz": _round(len(arrivals) / span_s, 4) if span_s > 0 else None,
+        "max_age_ms": _round(max(finite_ages), 1) if finite_ages else None,
+    }
+
+
 def _spread(values: np.ndarray | None) -> dict[str, float | None]:
     """Mean, max, and jitter, or all-None when the phase produced no samples."""
     if values is None or not values.size:
@@ -261,6 +289,7 @@ def audit_integrity(run: Run) -> dict[str, Any]:
             float(np.mean([1.0 if r.get("imu_ok", 0) else 0.0 for r in run.rows])), 4
         ),
         "imu_resets": _round(max((r.get("imu_resets", 0.0) for r in run.rows), default=0.0), 0),
+        "rotation_vector": rotation_vector_rate(run.rows),
         "saturated_fraction": _round(
             float(np.mean([1.0 if r.get("saturated", 0) else 0.0 for r in balance])), 4
         )
@@ -477,7 +506,8 @@ def identify_actuator_tracking(balance: list[dict[str, Any]]) -> dict[str, Any]:
     """Commanded versus measured moteus torque, per wheel, under real load."""
 
     if len(balance) < MIN_FIT_SAMPLES:
-        return _verdict("insufficient_data", f"{len(balance)} rows, need {MIN_FIT_SAMPLES}")
+        short = _verdict("insufficient_data", f"{len(balance)} rows, need {MIN_FIT_SAMPLES}")
+        return {"left": short, "right": dict(short)}
 
     wheels: dict[str, Any] = {}
     for side in ("left", "right"):
@@ -513,7 +543,11 @@ def identify_loop_latency(balance: list[dict[str, Any]]) -> dict[str, Any]:
     """Lag between commanding a torque and seeing the robot answer."""
 
     if len(balance) < MIN_FIT_SAMPLES:
-        return _verdict("insufficient_data", f"{len(balance)} rows, need {MIN_FIT_SAMPLES}")
+        short = _verdict("insufficient_data", f"{len(balance)} rows, need {MIN_FIT_SAMPLES}")
+        return {
+            "command_to_measured_torque": short,
+            "command_to_pitch_acceleration": dict(short),
+        }
 
     times_s = column(balance, "t_us") / 1e6
     commanded = column(balance, "balance_tau_nm")
@@ -739,8 +773,11 @@ def write_report(path: Path, derived: dict[str, Any]) -> None:
         f"max {integrity['control_dt_us']['max']} us, "
         f"jitter {integrity['control_dt_us']['jitter_us']} us",
         f"- control tick duration: max {integrity['tick_duration_us']['max']} us",
-        f"- IMU fresh fraction: {integrity['imu_fresh_fraction']}",
+        f"- IMU alive fraction: {integrity['imu_fresh_fraction']}",
         f"- IMU resets: {integrity['imu_resets']}",
+        f"- rotation vector: {integrity['rotation_vector']['arrivals']} arrivals, "
+        f"{integrity['rotation_vector']['rate_hz']} Hz, "
+        f"worst age {integrity['rotation_vector']['max_age_ms']} ms",
         f"- torque saturation fraction: {integrity['saturated_fraction']}",
         f"- fault rows: {integrity['fault_rows']}  reasons: {run['fault_reasons'] or 'none'}",
         f"- preflight checks: {checks['pass']} pass, {checks['fail']} fail, {checks['skip']} skip",

@@ -294,3 +294,43 @@ def test_nothing_identifiable_recommends_a_disturbance_rather_than_a_guess(tmp_p
 
     assert recommended["parameter_family"] is None
     assert "disturbance" in recommended["action"]
+
+
+def test_a_preflight_only_run_still_writes_a_report(tmp_path: Path):
+    """The first thing anyone runs is a preflight with no balance phase. The
+    report writer used to crash on it because the short-run paths returned a bare
+    verdict where it iterated per-key dicts."""
+
+    rows = [make_row(i, "preflight") for i in range(200)]
+    derived = analyze(write_run(tmp_path, rows))
+
+    tracking = derived["identification"]["actuator_tracking"]
+    latency = derived["identification"]["loop_latency"]
+    assert set(tracking) == {"left", "right"}
+    assert set(latency) == {"command_to_measured_torque", "command_to_pitch_acceleration"}
+    assert all(item["status"] == "insufficient_data" for item in tracking.values())
+
+    out = tmp_path / "out"
+    out.mkdir()
+    post.write_report(out / "report.md", derived)
+    assert "Recording integrity" in (out / "report.md").read_text(encoding="utf-8")
+
+
+def test_a_dead_rotation_vector_is_reported_even_though_the_imu_reads_alive(tmp_path: Path):
+    """imu_ok is isImuAlive(): any report inside 250 ms. A gyro streaming beside a
+    dead fused quaternion reads healthy there while arming stays blocked, so the
+    audit measures the quaternion itself."""
+
+    rows = []
+    for i in range(120):
+        # One quaternion at t=0, none after: age grows by one telemetry period.
+        rows.append(
+            make_row(i, "preflight", imu_ok=1, imu_age_us=i * 1_000_000, imu_age_ms=i * 1000)
+        )
+        rows[-1]["t_us"] = i * 1_000_000
+    audit = analyze(write_run(tmp_path, rows))["integrity"]
+
+    assert audit["imu_fresh_fraction"] == 1.0
+    assert audit["rotation_vector"]["arrivals"] == 1
+    assert audit["rotation_vector"]["rate_hz"] < 0.1
+    assert audit["rotation_vector"]["max_age_ms"] == 119000.0
