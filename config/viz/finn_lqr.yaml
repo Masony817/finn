@@ -1,4 +1,4 @@
-# Scopik profile for free-balancing Finn LQR captures.
+# Scopik profile for free-balancing Finn LQR captures. Reads schema lqr_v2.
 #
 # Unlike the Batch 2 profile, this replay does not hold the model upright. It
 # replays the real motor commands into the free seeded model so a short failed
@@ -32,11 +32,23 @@ signals:
   forward_pos_m:             {unit: m,     group: wheels}
   left_cmd_nm:               {unit: "N·m", group: commands}
   right_cmd_nm:              {unit: "N·m", group: commands}
+  left_torque_nm:            {unit: "N·m", group: commands}
+  right_torque_nm:           {unit: "N·m", group: commands}
   balance_tau_raw_nm:        {unit: "N·m", group: controller}
+  balance_tau_nm:            {unit: "N·m", group: controller}
+  tau_yaw_nm:                {unit: "N·m", group: controller}
   target_pitch_rad:          {unit: rad,   group: controller}
   target_forward_vel_m_s:    {unit: m/s,   group: controller}
+  ref_pos_m:                 {unit: m,     group: controller}
+  saturated:                 {unit: bool,  group: controller}
+  cmd_forward_vel_m_s:       {unit: m/s,   group: command}
+  cmd_yaw_rate_rad_s:        {unit: rad/s, group: command}
+  command_stale:             {unit: bool,  group: command}
   robot_forward_accel_m_s2:  {unit: "m/s²", group: imu}
   imu_age_ms:                {unit: ms,    group: health}
+  imu_resets:                {unit: count, group: health}
+  control_dt_us:             {unit: us,    group: timing}
+  tick_duration_us:          {unit: us,    group: timing}
 
 replay:
   actuators:

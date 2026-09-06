@@ -33,7 +33,7 @@ DEFAULT_TELEMETRY_FILENAME = "telemetry.csv"
 DEFAULT_EVENTS_FILENAME = "events.log"
 DEFAULT_OPERATOR_INPUT_FILENAME = "operator_input.log"
 DEFAULT_TELEMETRY_PREFIXES = ("schema,", "data,")
-DEFAULT_EVENT_PREFIXES = ("event,", "status,")
+DEFAULT_EVENT_PREFIXES = ("event,", "status,", "check,")
 
 BAUD_MAP = {
     9600: termios.B9600,
@@ -196,14 +196,14 @@ def upload_firmware(env: str, port: str | None = None) -> int:
     return completed.returncode
 
 
-def run_postprocess(command: list[str], run_dir: Path) -> tuple[int, Path, Path]:
+def run_postprocess(command: list[str], run_dir: Path, suffix: str = "") -> tuple[int, Path, Path]:
     resolved = [item.replace("{run_dir}", str(run_dir)) for item in command]
     post_dir = run_dir / "postprocess"
     post_dir.mkdir(exist_ok=True)
     print_host(f"postprocess started: {' '.join(resolved)}")
     completed = subprocess.run(resolved, text=True, capture_output=True, check=False)
-    stdout_path = post_dir / "stdout.log"
-    stderr_path = post_dir / "stderr.log"
+    stdout_path = post_dir / f"stdout{suffix}.log"
+    stderr_path = post_dir / f"stderr{suffix}.log"
     stdout_path.write_text(completed.stdout)
     stderr_path.write_text(completed.stderr)
     print(completed.stdout, end="")
@@ -294,6 +294,10 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.run_command = args.run_command or []
     args.periodic_command = args.periodic_command or []
     args.stop_command = args.stop_command or []
+    # Wrappers written before postprocess became repeatable still assign a string.
+    if isinstance(args.postprocess, str):
+        args.postprocess = [args.postprocess]
+    args.postprocess = args.postprocess or []
     if args.periodic_command_interval_s <= 0.0:
         raise SystemExit("--periodic-command-interval-s must be positive")
     if args.stop_command_repeats < 1:
@@ -502,17 +506,25 @@ def run_capture(
     print_host(f"final log dir: {final_dir}")
 
     if args.postprocess:
-        post_rc, stdout_path, stderr_path = run_postprocess(
-            shlex.split(args.postprocess), final_dir
-        )
-        manifest["postprocess"] = {
-            "command": args.postprocess,
-            "exit_code": post_rc,
-            "stdout": str(stdout_path),
-            "stderr": str(stderr_path),
-        }
+        steps: list[dict[str, object]] = []
+        worst_rc = 0
+        for index, command in enumerate(args.postprocess):
+            suffix = "" if len(args.postprocess) == 1 else f"_{index + 1}"
+            post_rc, stdout_path, stderr_path = run_postprocess(
+                shlex.split(command), final_dir, suffix
+            )
+            steps.append(
+                {
+                    "command": command,
+                    "exit_code": post_rc,
+                    "stdout": str(stdout_path),
+                    "stderr": str(stderr_path),
+                }
+            )
+            worst_rc = worst_rc or post_rc
+        manifest["postprocess"] = steps
         write_manifest(final_dir / "manifest.json", manifest)
-        if status == "pass" and post_rc != 0:
+        if status == "pass" and worst_rc != 0:
             return 3
 
     return 0 if status == "pass" else 1
@@ -599,7 +611,11 @@ def add_capture_arguments(
     )
     parser.add_argument(
         "--postprocess",
-        help="Command to run after a final run dir exists. '{run_dir}' is substituted.",
+        action="append",
+        help=(
+            "Command to run after a final run dir exists. '{run_dir}' is substituted. "
+            "Repeatable; steps run in order and a failure does not skip the rest."
+        ),
     )
     return parser
 

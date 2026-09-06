@@ -30,7 +30,7 @@ invariants, the steering signs, and the telemetry contract.
 firmware/finn-mcu/          Teensy 4.1 firmware, PlatformIO
   sysid/NN_<name>/          one bring-up or sysid sketch per directory
   control/04_lqr_balance/   the real-robot LQR controller + its generated/safety headers
-  tools/                    host-side capture wrappers and per-batch postprocessors
+  tools/                    host-side capture wrappers and per-run postprocessors
 sim/
   model/finn/               hand-authored MJCF (finn_robot.xml, scene.xml) + STL assets
   config/                   finn_measurements.yaml (source of truth), mujoco_postprocess.yaml
@@ -61,6 +61,7 @@ uv run python tools/run_lqr_sim.py                       # closed-loop LQR rollo
 uv run python tools/make_balance_demo.py                 # shove-and-recover demo -> chart PNG + GIF
 uv run python tools/drive_lqr_sim.py --drive-profile square --no-viewer   # scripted drive
 uv run python tools/build_seeded_mujoco_model.py --auto-select-latest 3
+uv run python firmware/finn-mcu/tools/postprocess_lqr_balance.py --run-dir <run_dir>
 uv run scopik gap --profile config/viz/finn.yaml --run <run_dir>
 
 cd firmware/finn-mcu && pio run -e <env>   # build one firmware environment
@@ -95,6 +96,9 @@ sysid firmware runs ->  logs/finn-mcu/sysid/batch_N_pass/<ts>/  (raw, gitignored
   run_lqr_sim.py                   ->  LQR gain + logs/lqr_sim/<ts>/, and with
                                        --firmware-header, lqr_seeded_config.h
   firmware lqr_balance             ->  logs/finn-mcu/lqr/<run>/
+  postprocess_lqr_balance.py       ->  postprocess/derived.yaml, naming one model
+                                       change and refusing the ones the run
+                                       could not observe
   scopik gap                       ->  scopik_gap.json + .rrd + appended gap history
 ```
 
@@ -117,12 +121,14 @@ Short LQR captures are the next controlled dataset.
 2. **`config/finn_conventions.yaml` is the sign contract**, shared by MuJoCo,
    Scopik, and firmware. If a sign looks wrong, fix it there and regenerate
    downstream; do not add a compensating negation at a call site.
-3. **Safety gates are load-bearing, not friction.** The firmware refuses to arm
-   until the two arming `*_bench_verified` flags in the conventions file are true
-   and the header has been rebuilt. A third flag gates steering only. `lqr_safety_config.h` holds separately reviewed
-   physical limits. Do not flip a flag, widen a limit, raise the torque
-   cap, or lengthen `kFirstTrialDurationMs` on an agent's own initiative - those
-   are the user's calls, made from evidence.
+3. **Safety gates are load-bearing, not friction.** `ARM FINN` does not arm: it
+   runs a motors-stopped preflight and arms only if every named check passes.
+   Arming also needs the two `*_bench_verified` flags in the conventions file true
+   and the header rebuilt. A third flag and `kDriveEnabled` gate the drive layer,
+   which ships built but inert. `lqr_safety_config.h` holds separately reviewed
+   physical limits. Do not flip a flag, widen a limit, raise the torque cap, or
+   lengthen `kFirstTrialDurationMs` or `kMaxTrialDurationMs` on an agent's own
+   initiative - those are the user's calls, made from evidence.
 4. **Steering, teleop, and any future policy go through the command layer, never
    the torque path.** The balance loop runs every tick whether or not a command
    arrives; a command source may only return a bounded `DriveCommand` that moves a
@@ -229,9 +235,10 @@ Read `packages/scopik/README.md` first; it is the profile reference.
 - Google-ish C++ style as written: anonymous namespace for internals, `k`-prefixed
   `constexpr` constants with explicit units in the name, `static_assert` for
   invariants that must hold between the generated header and the code.
-- Telemetry is line-prefixed CSV on serial (`schema,` / `data,` rows, `event,` /
-  `status,` lines). Scopik profiles parse it directly, so a column rename is a
-  contract change: update the profile and the postprocessor in the same commit.
+- Telemetry is line-prefixed CSV on serial (`schema,` / `data,` rows; `event,`,
+  `status,`, `check,` lines). Scopik profiles parse it directly, so a column
+  rename is a contract change: bump the schema tag and update the profile and the
+  postprocessor in the same commit. The LQR controller is on `lqr_v2`.
 - Agents build and static-check firmware; they do not flash or run it. Flashing,
   arming, and any hands-on check belong to the user at the robot.
 

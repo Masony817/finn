@@ -903,8 +903,10 @@ def test_capture_lqr_defaults_to_heartbeat_and_stop(monkeypatch):
     assert args.periodic_command_interval_s == 0.1
     assert args.stop_command == ["STOP"]
     assert args.stop_command_repeats == 3
-    assert "finn_lqr.yaml" in args.postprocess
-    assert "--no-replay" not in args.postprocess
+    steps = " ".join(args.postprocess)
+    assert "postprocess_lqr_balance.py" in steps
+    assert "finn_lqr.yaml" in steps
+    assert "--no-replay" not in steps
 
 
 def test_capture_lqr_convention_check_never_arms_or_replays():
@@ -921,8 +923,86 @@ def test_capture_lqr_convention_check_never_arms_or_replays():
     assert args.pass_marker == [",convention_check_complete,"]
     assert args.arm_command == []
     assert args.run_command == ["CHECK CONVENTIONS"]
-    assert "--no-replay" in args.postprocess
+    steps = " ".join(args.postprocess)
+    assert "--no-replay" in steps
+    assert "postprocess_lqr_balance.py" in steps
     assert args.show_telemetry is True
+
+
+def test_capture_lqr_preflight_mode_never_arms_and_skips_the_replay():
+    """The preflight dry run has no balance data, so a free-model replay is noise."""
+
+    module_path = TOOLS / "capture-lqr-balance.py"
+    spec = importlib.util.spec_from_file_location("capture_lqr_balance_preflight", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = module.parse_args(["--preflight", "--skip-upload"])
+
+    assert args.run_name == "lqr_preflight"
+    assert args.arm_command == []
+    assert args.run_command == ["PREFLIGHT"]
+    assert args.pass_marker == [",preflight_passed,"]
+    assert ",preflight_failed," in args.fail_marker
+    steps = " ".join(args.postprocess)
+    assert "postprocess_lqr_balance.py" in steps
+    assert "scopik" not in steps
+
+
+def test_capture_lqr_forwards_a_requested_trial_length():
+    module_path = TOOLS / "capture-lqr-balance.py"
+    spec = importlib.util.spec_from_file_location("capture_lqr_balance_trial", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.parse_args(["--trial-ms", "2500"]).auto_command == ["TRIAL 2500"]
+    assert module.parse_args([]).auto_command == []
+
+
+def test_live_integrity_monitor_flags_a_schema_the_postprocessor_cannot_read():
+    """The firmware cannot see the host end of the cable; this is what does."""
+
+    module_path = TOOLS / "capture-lqr-balance.py"
+    spec = importlib.util.spec_from_file_location("capture_lqr_balance_monitor", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monitor = module.LiveIntegrityMonitor()
+    monitor("schema,lqr_v1")
+    monitor("data,t_us,state,phase")
+    monitor("data,100,preflight,preflight")
+    assert not monitor.recording_ok
+
+    clean = module.LiveIntegrityMonitor()
+    clean("schema,lqr_v2")
+    clean("data,t_us,state,phase")
+    clean("data,100,preflight,preflight")
+    assert clean.recording_ok
+
+
+def test_live_integrity_monitor_counts_truncated_rows_and_failed_checks():
+    module_path = TOOLS / "capture-lqr-balance.py"
+    spec = importlib.util.spec_from_file_location("capture_lqr_balance_monitor2", module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monitor = module.LiveIntegrityMonitor()
+    monitor("schema,lqr_v2")
+    monitor("data,t_us,state,phase")
+    monitor("data,100,preflight")
+    monitor("check,1,imu_quat_rate_hz,pass,101.0,80.0,ok")
+    monitor("check,2,moteus_left_link_hz,fail,0.0,80.0,query_replies")
+    monitor("check,3,bus_voltage_floor,skip,24.1,0.0,unset")
+
+    assert monitor.malformed_rows == 1
+    assert monitor.checks_failed == 1
+    assert monitor.checks_skipped == 1
+    assert monitor.failed_checks == ["moteus_left_link_hz"]
+    assert not monitor.recording_ok
 
 
 def test_arm_command_override_replaces_default():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -118,3 +119,84 @@ def test_the_command_timeout_absorbs_dropped_messages_at_the_host_command_rate()
 
     assert command_timeout_ms >= 3 * host_command_period_ms
     assert command_timeout_ms <= 10 * host_command_period_ms
+
+
+def safety_value(name: str, _depth: int = 0) -> float:
+    """Evaluate a reviewed limit, following degree conversions and cross-references.
+
+    The limits are written the way a reviewer reads them -- `10.0f * PI / 180.0`,
+    or one constant defined as another -- so comparing them needs the expression,
+    not the literal.
+    """
+
+    assert _depth < 8, f"cyclic constant reference resolving {name}"
+    expression = header_value(name, SAFETY_HEADER.read_text(encoding="utf-8"))
+    expression = re.sub(r"(?<=[\d.])[fFuUlL]+\b", "", expression)
+    expression = expression.replace("PI", repr(math.pi))
+    for reference in sorted(set(re.findall(r"\bk[A-Za-z]\w*", expression)), key=len, reverse=True):
+        expression = expression.replace(reference, repr(safety_value(reference, _depth + 1)))
+    return float(eval(expression, {"__builtins__": {}}, {}))
+
+
+def test_arming_runs_the_preflight_rather_than_arming_directly():
+    """ARM FINN must not be a shortcut past the checks it exists to run."""
+
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert 'strcmp(line, "ARM FINN") == 0' in firmware
+    assert "startPreflight(true)" in firmware
+    assert 'strcmp(line, "PREFLIGHT") == 0' in firmware
+    assert "startPreflight(false)" in firmware
+    # Arming is reached only by the preflight evaluator, never by a command branch.
+    assert firmware.count("SystemState::kArmedIdle;") == 1
+
+
+def test_every_bench_verified_flag_is_a_named_preflight_check():
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert '"conventions_pitch", FinnLqrSeeded::kPitchDirectionBenchVerified' in firmware
+    assert '"conventions_wheels", FinnLqrSeeded::kWheelEncoderDirectionsBenchVerified' in firmware
+
+
+def test_yaw_torque_is_zero_while_the_drive_layer_is_gated():
+    """The command layer ships built but inert; balance must be bit-identical to the
+    validated station keeper until driving is deliberately enabled."""
+
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert "FinnLqrSafety::kDriveEnabled" in firmware
+    assert "? -FinnLqrSeeded::kGainYawRate * (yawRateRadS() - arbiter.yaw_rad_s)" in firmware
+    assert ": 0.0f;" in firmware
+    assert 'printEvent("drive_rejected", "drive_layer_gated_see_kDriveEnabled")' in firmware
+
+
+def test_the_telemetry_applies_the_yaw_sign_contract_like_the_pitch_sign():
+    """kYawSign is exported by the generator; a column that ignores it would make
+    Scopik and the controller disagree the moment the bench check inverts yaw."""
+
+    firmware = FIRMWARE.read_text(encoding="utf-8")
+
+    assert "float yawRateRadS() {\n  return FinnLqrSeeded::kYawSign * imu.gyro_y_rad_s;" in firmware
+    assert "static_cast<double>(yawRateRadS())" in firmware
+
+
+def test_operator_selectable_trial_length_cannot_exceed_the_reviewed_one():
+    assert safety_value("kMaxTrialDurationMs") <= safety_value("kFirstTrialDurationMs")
+    assert safety_value("kMinTrialDurationMs") <= safety_value("kMaxTrialDurationMs")
+    assert "kMaxTrialDurationMs" in FIRMWARE.read_text(encoding="utf-8")
+
+
+def test_preflight_limits_sit_inside_the_limits_that_fault_a_running_trial():
+    """A preflight that admits a state the run would immediately fault on is not a
+    check, it is a way to arm into a fault."""
+
+    assert safety_value("kMaxPreflightTempC") < safety_value("kMaxMoteusTempC")
+    assert safety_value("kMaxStartPitchErrorRad") < safety_value("kMaxAbsPitchRad")
+    assert safety_value("kMaxStartWheelSpeedRevS") < safety_value("kMaxWheelSpeedRevS")
+
+
+def test_the_control_budget_fits_inside_one_control_period():
+    header = HEADER.read_text(encoding="utf-8")
+    period_us = float(header_value("kControlPeriodUs", header).rstrip("UL"))
+
+    assert safety_value("kControlBudgetUs") < period_us

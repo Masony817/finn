@@ -184,13 +184,47 @@ wheels, for the same reason.
 ## Telemetry format
 
 The MCU writes line-prefixed CSV over serial: `schema,` and `data,` rows are
-telemetry, `event,` and `status,` lines are the event log. `serial_log_capture.py`
-splits them into `telemetry.csv` and `events.log` in the run directory.
+telemetry, and `event,`, `status,`, and `check,` lines are the event log.
+`serial_log_capture.py` splits them into `telemetry.csv` and `events.log` in the
+run directory.
 
 Scopik profiles address telemetry columns by name, and the batch postprocessors
 address them positionally by schema tag. Renaming or reordering a column is a
 contract change across firmware, profile, and postprocessor; change all three in
 one commit, and bump the schema tag when the layout moves.
+
+The LQR controller is on `lqr_v2`, which added command-layer, timing, and
+microsecond IMU-age columns to `lqr_v1`. `postprocess_lqr_balance.py` reads it by
+name off the header row and refuses a run whose schema tag it does not know,
+rather than silently misreading columns. Two tests hold the format together:
+`test_firmware_header_and_row_have_the_same_column_count` counts printf
+conversions against the header string in `main.cpp`, and
+`test_scopik_lqr_profile_only_reads_columns_the_firmware_emits` stops the profile
+drifting away from the firmware.
+
+## Arming preflight
+
+`ARM FINN` does not arm. It enters a two second motors-stopped state that samples
+the IMU and the CAN bus at the control rate, then evaluates a battery of named
+checks and arms only if every one passes. `PREFLIGHT` runs the same battery and
+returns to idle, so a failure can be chased without touching the arm path.
+
+Sampling over a window rather than probing once is the whole point. The failures
+that end a balance trial are intermittent: a marginal I2C pull-up that drops one
+report in twenty, a CAN termination fault that costs replies under load, a pack
+that only sags when queried at 100 Hz. A single-shot check sees none of them.
+
+The checks are emitted as `check,<t_us>,<name>,<pass|fail|skip>,<measured>,<limit>,<detail>`
+so the operator, the terminal, and the postprocessor all read the same record.
+`skip` exists for a real case rather than as a placeholder: `bus_voltage_floor`
+has no value to compare against, because no bus voltage is recorded anywhere in
+this repo, so it reports the measurement and declines to gate until
+`kMinBusVoltageV` is set.
+
+The host runs a parallel check the firmware cannot: `LiveIntegrityMonitor` in
+`capture-lqr-balance.py` watches the schema tag, per-row column count, and
+non-finite values as they land, because the MCU has no way to know what actually
+arrived at the other end of the USB cable.
 
 ## Host tooling
 
