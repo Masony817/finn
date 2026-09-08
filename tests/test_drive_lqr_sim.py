@@ -1,20 +1,21 @@
 """Unit tests for the command layer above Finn's balance loop.
 
-Everything here is pure arithmetic and runs without MuJoCo, which is the point:
-the arbiter, the allocator, and the keyboard latch are the pieces the firmware
-port has to reproduce exactly, so they are kept independently checkable.
+Exercises command shaping and the simulation viewer's keyboard adapter.
+The hardware-independent control module is also tested against native C++.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import sys
-import types
 from pathlib import Path
 
 import mujoco
 import mujoco.viewer
 import pytest
+
+from finn import control, reporting
+from finn import simulation as rls
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,10 +29,9 @@ def _load(name: str, filename: str):
     return module
 
 
-rls = _load("run_lqr_sim_for_drive", "run_lqr_sim.py")
 drive = _load("drive_lqr_sim", "drive_lqr_sim.py")
 
-LIMITS = rls.DriveLimits(
+LIMITS = control.DriveLimits(
     max_forward_vel_m_s=0.6,
     max_yaw_rate_rad_s=1.0,
     forward_accel_limit_m_s2=0.5,
@@ -46,14 +46,14 @@ DT = 0.01
 
 
 def test_yaw_only_gets_the_torque_balance_left_behind():
-    balance, yaw = rls.allocate_wheel_torques(0.4, 0.9, 1.0)
+    balance, yaw = control.allocate_wheel_torques(0.4, 0.9, 1.0)
 
     assert balance == pytest.approx(0.4)
     assert yaw == pytest.approx(0.6)
 
 
 def test_a_saturated_balance_loop_cannot_steer():
-    balance, yaw = rls.allocate_wheel_torques(2.0, 5.0, 1.0)
+    balance, yaw = control.allocate_wheel_torques(2.0, 5.0, 1.0)
 
     assert balance == pytest.approx(1.0)
     assert yaw == pytest.approx(0.0)
@@ -65,7 +65,7 @@ def test_a_saturated_balance_loop_cannot_steer():
 )
 def test_no_allocation_can_put_a_wheel_outside_the_envelope(tau_balance, tau_yaw):
     limit = 1.0
-    balance, yaw = rls.allocate_wheel_torques(tau_balance, tau_yaw, limit)
+    balance, yaw = control.allocate_wheel_torques(tau_balance, tau_yaw, limit)
     left, right = rls.yaw_torque_to_wheels(yaw, -1.0)
 
     assert abs(left + balance) <= limit + 1e-12
@@ -83,7 +83,7 @@ def test_yaw_torque_split_is_equal_and_opposite():
 
 
 def _arbiter():
-    return rls.CommandArbiter(limits=LIMITS)
+    return control.CommandArbiter(limits=LIMITS)
 
 
 def test_no_command_source_is_a_standing_stop():
@@ -92,12 +92,12 @@ def test_no_command_source_is_a_standing_stop():
     for tick in range(50):
         command = arbiter.step(None, tick * DT, DT)
 
-    assert command == rls.DriveCommand(0.0, 0.0)
+    assert command == control.DriveCommand(0.0, 0.0)
 
 
 def test_a_wild_command_is_clamped_into_the_envelope():
     arbiter = _arbiter()
-    source = lambda _t: rls.DriveCommand(1e6, -1e6)  # noqa: E731
+    source = lambda _t: control.DriveCommand(1e6, -1e6)  # noqa: E731
 
     for tick in range(2000):
         command = arbiter.step(source, tick * DT, DT)
@@ -108,7 +108,7 @@ def test_a_wild_command_is_clamped_into_the_envelope():
 
 def test_the_command_ramps_rather_than_stepping():
     arbiter = _arbiter()
-    source = lambda _t: rls.DriveCommand(0.6, 0.0)  # noqa: E731
+    source = lambda _t: control.DriveCommand(0.6, 0.0)  # noqa: E731
 
     first = arbiter.step(source, 0.0, DT)
 
@@ -119,7 +119,7 @@ def test_a_source_that_goes_silent_is_held_then_ramped_down():
     """Invariant 4: a jittery 10 Hz policy is normal, a stopped one is not."""
 
     arbiter = _arbiter()
-    live = lambda _t: rls.DriveCommand(0.3, 0.0)  # noqa: E731
+    live = lambda _t: control.DriveCommand(0.3, 0.0)  # noqa: E731
 
     time_s = 0.0
     while time_s < 5.0:
@@ -148,8 +148,8 @@ def test_a_source_that_goes_silent_is_held_then_ramped_down():
     "source",
     [
         lambda _t: (_ for _ in ()).throw(RuntimeError("policy crashed")),
-        lambda _t: rls.DriveCommand(float("nan"), 0.0),
-        lambda _t: rls.DriveCommand(0.0, float("inf")),
+        lambda _t: control.DriveCommand(float("nan"), 0.0),
+        lambda _t: control.DriveCommand(0.0, float("inf")),
         lambda _t: (1.0, 2.0),
         lambda _t: None,
     ],
@@ -161,7 +161,7 @@ def test_an_unusable_source_never_escapes_the_arbiter(source):
         command = arbiter.step(source, tick * DT, DT)
         assert command.is_finite()
 
-    assert command == rls.DriveCommand(0.0, 0.0)
+    assert command == control.DriveCommand(0.0, 0.0)
     assert arbiter.rejected_samples == 200
 
 
@@ -178,7 +178,6 @@ class FakeClock:
 
 def _keyboard(clock, hold_window_s=0.6):
     return drive.KeyboardDrive(
-        rls,
         hold_window_s=hold_window_s,
         max_forward_vel_m_s=LIMITS.max_forward_vel_m_s,
         max_yaw_rate_rad_s=LIMITS.max_yaw_rate_rad_s,
@@ -187,16 +186,16 @@ def _keyboard(clock, hold_window_s=0.6):
 
 
 def test_no_keys_means_stop():
-    assert _keyboard(FakeClock()).command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert _keyboard(FakeClock()).command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 @pytest.mark.parametrize(
     ("key", "expected"),
     [
-        (drive.KEY_W, rls.DriveCommand(0.6, 0.0)),
-        (drive.KEY_S, rls.DriveCommand(-0.6, 0.0)),
-        (drive.KEY_A, rls.DriveCommand(0.0, 1.0)),
-        (drive.KEY_D, rls.DriveCommand(0.0, -1.0)),
+        (drive.KEY_UP, control.DriveCommand(0.6, 0.0)),
+        (drive.KEY_DOWN, control.DriveCommand(-0.6, 0.0)),
+        (drive.KEY_LEFT, control.DriveCommand(0.0, 1.0)),
+        (drive.KEY_RIGHT, control.DriveCommand(0.0, -1.0)),
     ],
 )
 def test_each_key_drives_its_own_axis(key, expected):
@@ -208,16 +207,16 @@ def test_each_key_drives_its_own_axis(key, expected):
 
 def test_opposing_keys_cancel():
     keyboard = _keyboard(FakeClock())
-    keyboard.on_key(drive.KEY_W)
-    keyboard.on_key(drive.KEY_S)
+    keyboard.on_key(drive.KEY_UP)
+    keyboard.on_key(drive.KEY_DOWN)
 
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 def test_a_key_stays_held_across_the_repeat_gap_then_expires():
     clock = FakeClock()
     keyboard = _keyboard(clock, hold_window_s=0.6)
-    keyboard.on_key(drive.KEY_W)
+    keyboard.on_key(drive.KEY_UP)
 
     clock.now = 0.5  # inside a typical OS key-repeat delay
     assert keyboard.command(0.0).forward_vel_m_s == pytest.approx(0.6)
@@ -229,18 +228,18 @@ def test_a_key_stays_held_across_the_repeat_gap_then_expires():
 def test_space_stops_immediately():
     clock = FakeClock()
     keyboard = _keyboard(clock)
-    keyboard.on_key(drive.KEY_W)
-    keyboard.on_key(drive.KEY_A)
+    keyboard.on_key(drive.KEY_UP)
+    keyboard.on_key(drive.KEY_LEFT)
     keyboard.on_key(drive.KEY_SPACE)
 
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 def test_unrelated_keys_are_ignored():
     keyboard = _keyboard(FakeClock())
     keyboard.on_key(ord("Q"))
 
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 # --- scripted profiles: the template a future policy tenant copies -----------
@@ -248,23 +247,21 @@ def test_unrelated_keys_are_ignored():
 
 def test_scripted_profiles_only_ever_emit_bounded_commands():
     for name in ("square", "spin"):
-        source = drive.scripted_profile(rls, name, max_forward_vel_m_s=0.6, max_yaw_rate_rad_s=1.0)
+        source = drive.scripted_profile(name, max_forward_vel_m_s=0.6, max_yaw_rate_rad_s=1.0)
         for tick in range(3000):
             command = source(tick * DT)
-            assert isinstance(command, rls.DriveCommand)
+            assert isinstance(command, control.DriveCommand)
             assert abs(command.forward_vel_m_s) <= 0.6
             assert abs(command.yaw_rate_rad_s) <= 1.0
 
 
 def test_the_none_profile_hands_back_no_source():
-    assert (
-        drive.scripted_profile(rls, "none", max_forward_vel_m_s=0.6, max_yaw_rate_rad_s=1.0) is None
-    )
+    assert drive.scripted_profile("none", max_forward_vel_m_s=0.6, max_yaw_rate_rad_s=1.0) is None
 
 
 def test_an_unknown_profile_is_a_named_error():
     with pytest.raises(drive.DriveError):
-        drive.scripted_profile(rls, "barrel-roll", max_forward_vel_m_s=0.6, max_yaw_rate_rad_s=1.0)
+        drive.scripted_profile("barrel-roll", max_forward_vel_m_s=0.6, max_yaw_rate_rad_s=1.0)
 
 
 # --- viewer key collisions ---------------------------------------------------
@@ -288,43 +285,6 @@ def _viewer_shortcut_keys() -> dict[str, str]:
     return keys
 
 
-def test_wasd_still_collides_so_the_flag_pins_are_still_needed():
-    """If MuJoCo ever frees these letters, delete ViewerFlagKeeper rather than keep it."""
-
-    shortcuts = _viewer_shortcut_keys()
-
-    assert {"W", "A", "S", "D"} <= shortcuts.keys()
-
-
-def test_only_the_vis_flag_letters_can_be_pinned():
-    """Two of the four drive letters are unreachable, and that is the whole story.
-
-    A and D are MjvOption vis flags, exposed as Handle.opt, so they pin. W and S
-    are MjvScene render flags and the passive viewer exposes no render scene, so
-    they cannot be suppressed at all. That asymmetry is why arrows exist.
-    """
-
-    pinned = {mujoco.mjVISSTRING[i][2].upper() for i in drive.viewer_flag_pins()}
-
-    assert pinned == {"A", "D"}
-    assert drive.unpinnable_drive_letters() == ["S", "W"]
-
-
-def test_the_viewer_handle_really_exposes_what_the_flag_keeper_touches():
-    """Guard against mocking the interface instead of checking it.
-
-    An earlier version of ViewerFlagKeeper read `viewer.scn`, which no Handle has.
-    A SimpleNamespace stand-in happily grew the attribute and the test passed while
-    the real viewer raised AttributeError on the first frame. Assert against the
-    real class instead.
-    """
-
-    handle_attrs = set(dir(mujoco.viewer.Handle))
-
-    assert "opt" in handle_attrs, "ViewerFlagKeeper reads viewer.opt"
-    assert "scn" not in handle_attrs, "if a render scene appears, W and S become pinnable"
-
-
 def test_arrow_keys_collide_with_nothing():
     """Arrows are the clean scheme, which is why they are the recommended one."""
 
@@ -339,34 +299,17 @@ def test_arrow_keys_collide_with_nothing():
 @pytest.mark.parametrize(
     ("key", "expected"),
     [
-        (drive.KEY_UP, rls.DriveCommand(0.6, 0.0)),
-        (drive.KEY_DOWN, rls.DriveCommand(-0.6, 0.0)),
-        (drive.KEY_LEFT, rls.DriveCommand(0.0, 1.0)),
-        (drive.KEY_RIGHT, rls.DriveCommand(0.0, -1.0)),
+        (drive.KEY_UP, control.DriveCommand(0.6, 0.0)),
+        (drive.KEY_DOWN, control.DriveCommand(-0.6, 0.0)),
+        (drive.KEY_LEFT, control.DriveCommand(0.0, 1.0)),
+        (drive.KEY_RIGHT, control.DriveCommand(0.0, -1.0)),
     ],
 )
-def test_arrows_drive_the_same_axes_as_wasd(key, expected):
+def test_arrows_drive_the_expected_axes(key, expected):
     keyboard = _keyboard(FakeClock())
     keyboard.on_key(key)
 
     assert keyboard.command(0.0) == expected
-
-
-def test_the_flag_keeper_restores_what_it_found():
-    """Driven with a real MjvOption, not a stand-in."""
-
-    viewer = types.SimpleNamespace(opt=mujoco.MjvOption())
-    indices = drive.viewer_flag_pins()
-    keeper = drive.ViewerFlagKeeper()
-
-    keeper(viewer)
-    original = [int(viewer.opt.flags[i]) for i in indices]
-
-    for index in indices:
-        viewer.opt.flags[index] = not viewer.opt.flags[index]
-    keeper(viewer)
-
-    assert [int(viewer.opt.flags[i]) for i in indices] == original
 
 
 # --- tracking gates must not grade a robot that was standing still -----------
@@ -389,7 +332,7 @@ def test_a_stop_command_is_never_scored_as_tracking():
 
     rows = [_row(i * 0.01, 0.0, 0.0) for i in range(500)]
 
-    p95, worst, scored = rls.settled_tracking_error(
+    p95, worst, scored = reporting.settled_tracking_error(
         rows, "cmd_forward_vel_m_s", "forward_vel_m_s", 150
     )
 
@@ -400,7 +343,7 @@ def test_a_stop_command_is_never_scored_as_tracking():
 def test_a_steady_nonzero_command_is_scored():
     rows = [_row(i * 0.01, 0.4, 0.35) for i in range(500)]
 
-    p95, worst, scored = rls.settled_tracking_error(
+    p95, worst, scored = reporting.settled_tracking_error(
         rows, "cmd_forward_vel_m_s", "forward_vel_m_s", 150
     )
 
@@ -414,13 +357,15 @@ def test_a_command_that_never_settles_is_not_scored():
 
     rows = [_row(i * 0.01, 0.005 * i, 0.0) for i in range(500)]
 
-    _, _, scored = rls.settled_tracking_error(rows, "cmd_forward_vel_m_s", "forward_vel_m_s", 150)
+    _, _, scored = reporting.settled_tracking_error(
+        rows, "cmd_forward_vel_m_s", "forward_vel_m_s", 150
+    )
 
     assert scored == 0
 
 
 def test_too_few_scored_samples_is_reported_rather_than_passed_over():
-    assert rls.MIN_TRACKING_SAMPLES > 0
+    assert reporting.MIN_TRACKING_SAMPLES > 0
 
     metrics = {
         "velocity_tracking_assessed": False,
@@ -475,8 +420,8 @@ def test_a_held_key_keeps_driving_long_past_the_latch_window(fake_glfw):
 
     clock = FakeClock()
     keyboard = _keyboard(clock, hold_window_s=0.6)
-    fake_glfw.down = {drive.KEY_W}
-    keyboard.on_key(drive.KEY_W)
+    fake_glfw.down = {drive.KEY_UP}
+    keyboard.on_key(drive.KEY_UP)
 
     assert keyboard.polling_key_state
 
@@ -487,46 +432,46 @@ def test_a_held_key_keeps_driving_long_past_the_latch_window(fake_glfw):
 def test_releasing_a_key_stops_without_waiting_out_the_latch(fake_glfw):
     clock = FakeClock()
     keyboard = _keyboard(clock)
-    fake_glfw.down = {drive.KEY_W}
-    keyboard.on_key(drive.KEY_W)
+    fake_glfw.down = {drive.KEY_UP}
+    keyboard.on_key(drive.KEY_UP)
 
     fake_glfw.down = set()
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 def test_holding_two_keys_drives_and_turns_at_once(fake_glfw):
     keyboard = _keyboard(FakeClock())
-    fake_glfw.down = {drive.KEY_W, drive.KEY_A}
-    keyboard.on_key(drive.KEY_W)
+    fake_glfw.down = {drive.KEY_UP, drive.KEY_LEFT}
+    keyboard.on_key(drive.KEY_UP)
 
-    assert keyboard.command(0.0) == rls.DriveCommand(0.6, 1.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.6, 1.0)
 
 
 def test_space_stops_even_while_a_drive_key_is_held(fake_glfw):
     keyboard = _keyboard(FakeClock())
-    fake_glfw.down = {drive.KEY_W, drive.KEY_SPACE}
-    keyboard.on_key(drive.KEY_W)
+    fake_glfw.down = {drive.KEY_UP, drive.KEY_SPACE}
+    keyboard.on_key(drive.KEY_UP)
 
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 def test_state_polling_only_starts_after_a_key_hands_over_the_window(fake_glfw):
     keyboard = _keyboard(FakeClock())
 
     assert not keyboard.polling_key_state
-    fake_glfw.down = {drive.KEY_W}
+    fake_glfw.down = {drive.KEY_UP}
     # Until a key event arrives there is no window, so a held key reads as idle.
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
-    keyboard.on_key(drive.KEY_W)
+    keyboard.on_key(drive.KEY_UP)
     assert keyboard.polling_key_state
 
 
 def test_a_glfw_failure_falls_back_to_the_latch_instead_of_ending_the_run(fake_glfw):
     clock = FakeClock()
     keyboard = _keyboard(clock, hold_window_s=0.6)
-    fake_glfw.down = {drive.KEY_W}
-    keyboard.on_key(drive.KEY_W)
+    fake_glfw.down = {drive.KEY_UP}
+    keyboard.on_key(drive.KEY_UP)
 
     def explode(window, keycode):
         raise RuntimeError("window destroyed")
@@ -537,18 +482,17 @@ def test_a_glfw_failure_falls_back_to_the_latch_instead_of_ending_the_run(fake_g
     assert keyboard.command(0.0).forward_vel_m_s == pytest.approx(0.6)
     assert not keyboard.polling_key_state
     clock.now = 5.0
-    assert keyboard.command(0.0) == rls.DriveCommand(0.0, 0.0)
+    assert keyboard.command(0.0) == control.DriveCommand(0.0, 0.0)
 
 
 def test_polling_can_be_turned_off():
     keyboard = drive.KeyboardDrive(
-        rls,
         hold_window_s=0.6,
         max_forward_vel_m_s=0.6,
         max_yaw_rate_rad_s=1.0,
         clock=FakeClock(),
         poll_key_state=False,
     )
-    keyboard.on_key(drive.KEY_W)
+    keyboard.on_key(drive.KEY_UP)
 
     assert not keyboard.polling_key_state

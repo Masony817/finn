@@ -24,7 +24,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install dependencies (locked)
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Lint (ruff)
         run: uv run ruff check .
       - name: Format check (ruff)

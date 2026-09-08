@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
-"""Drive the balancing Finn model around with WASD, or with a scripted profile.
+"""Drive the balancing Finn model with arrow keys or a scripted profile.
 
-This is layer 3 of the control stack: a command source and nothing else.  It hands
-`tools/run_lqr_sim.py` a stream of DriveCommand intent and never touches torque,
-gains, or the plant, so a wedged or wrong keyboard cannot cost the robot its
-balance.  A future HRI or navigation policy plugs in at exactly this seam; the
-scripted profiles below are the template for it.
-
-macOS needs mjpython for the live viewer:
-
-    uv run --isolated --python /opt/homebrew/bin/python3 \
-      mjpython tools/drive_lqr_sim.py --duration-s 60
+Command callbacks are synchronous and must return immediately. On macOS, run
+through mjpython with a framework Python for the live viewer.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib.util
 import json
 import sys
 import threading
 import time
 import warnings
+from dataclasses import asdict
 from pathlib import Path
 
 import glfw
-import mujoco
 import numpy as np
 from scopik.live import LiveSession
+
+from finn import control, paths, reporting
+from finn import lqr as cli
+from finn import simulation as lqr
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "sim/generated/seeded/latest/finn.seeded.sim.xml"
@@ -44,58 +39,15 @@ LIVE_SIGNALS = {
 }
 
 # GLFW key codes, which is what the MuJoCo viewer hands the callback.
-KEY_W, KEY_A, KEY_S, KEY_D = 87, 65, 83, 68
 KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT = 265, 264, 263, 262
 KEY_SPACE = 32
 
 # MuJoCo binds a shortcut to every letter A-Z, so arrows are the only clean scheme.
-DRIVE_LETTERS = frozenset("WASD")
-FORWARD_KEYS = (KEY_W, KEY_UP)
-BACKWARD_KEYS = (KEY_S, KEY_DOWN)
-LEFT_KEYS = (KEY_A, KEY_LEFT)
-RIGHT_KEYS = (KEY_D, KEY_RIGHT)
+FORWARD_KEYS = (KEY_UP,)
+BACKWARD_KEYS = (KEY_DOWN,)
+LEFT_KEYS = (KEY_LEFT,)
+RIGHT_KEYS = (KEY_RIGHT,)
 DRIVE_KEYS = FORWARD_KEYS + BACKWARD_KEYS + LEFT_KEYS + RIGHT_KEYS
-
-
-def viewer_flag_pins() -> list[int]:
-    """Which MjvOption vis flags the drive letters would otherwise toggle.
-
-    Only A and D are reachable. W and S are MjvScene render flags, and the passive
-    viewer exposes no render scene, so those two cannot be suppressed at all;
-    docs/codebase-notes.md has the detail. Indices come from MuJoCo's own table so
-    a release that moves a shortcut moves this with it.
-    """
-
-    return [
-        index
-        for index in range(mujoco.mjtVisFlag.mjNVISFLAG)
-        if mujoco.mjVISSTRING[index][2].upper() in DRIVE_LETTERS
-    ]
-
-
-def unpinnable_drive_letters() -> list[str]:
-    """Drive letters whose viewer shortcut cannot be suppressed. Reported to the user."""
-
-    return sorted(
-        mujoco.mjRNDSTRING[index][2].upper()
-        for index in range(mujoco.mjtRndFlag.mjNRNDFLAG)
-        if mujoco.mjRNDSTRING[index][2].upper() in DRIVE_LETTERS
-    )
-
-
-class ViewerFlagKeeper:
-    """Hold the reachable drive-key vis flags at whatever they were on launch."""
-
-    def __init__(self) -> None:
-        self._indices = viewer_flag_pins()
-        self._wanted: list[int] | None = None
-
-    def __call__(self, viewer) -> None:
-        if self._wanted is None:
-            self._wanted = [int(viewer.opt.flags[i]) for i in self._indices]
-            return
-        for index, value in zip(self._indices, self._wanted, strict=True):
-            viewer.opt.flags[index] = value
 
 
 class DriveError(Exception):
@@ -110,20 +62,6 @@ def portable_path(path: Path) -> str:
         return str(resolved)
 
 
-def load_lqr_sim():
-    """Load run_lqr_sim.py, which is a script rather than an importable module."""
-
-    path = REPO_ROOT / "tools/run_lqr_sim.py"
-    spec = importlib.util.spec_from_file_location("finn_run_lqr_sim", path)
-    if spec is None or spec.loader is None:
-        raise DriveError(f"cannot load {portable_path(path)}")
-    module = importlib.util.module_from_spec(spec)
-    # @dataclass resolves annotations through sys.modules, so register before executing.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 class KeyboardDrive:
     """Turn viewer key input into a DriveCommand stream, holding while held.
 
@@ -132,12 +70,11 @@ class KeyboardDrive:
     bootstrap: the first keypress captures the GLFW window off the thread holding
     the GL context, and `held()` reads true key state from then on. Every GLFW call
     falls back to the latch rather than ending the run.
-    docs/codebase-notes.md explains why this is safe off-thread.
+    This best-effort viewer adapter is not a hardware command transport.
     """
 
     def __init__(
         self,
-        lqr,
         *,
         hold_window_s: float,
         max_forward_vel_m_s: float,
@@ -145,7 +82,6 @@ class KeyboardDrive:
         clock=time.perf_counter,
         poll_key_state: bool = True,
     ) -> None:
-        self._lqr = lqr
         self._hold_window_s = hold_window_s
         self._max_forward = max_forward_vel_m_s
         self._max_yaw = max_yaw_rate_rad_s
@@ -212,16 +148,16 @@ class KeyboardDrive:
         # Space overrides everything, so it still stops the robot mid-hold. In the
         # latch fallback it has already cleared the stamps and reads as not held.
         if self.held(KEY_SPACE):
-            return self._lqr.DriveCommand(0.0, 0.0)
+            return control.DriveCommand(0.0, 0.0)
         forward = self._max_forward * (self._any_held(FORWARD_KEYS) - self._any_held(BACKWARD_KEYS))
         yaw = self._max_yaw * (self._any_held(LEFT_KEYS) - self._any_held(RIGHT_KEYS))
-        return self._lqr.DriveCommand(forward, yaw)
+        return control.DriveCommand(forward, yaw)
 
 
-def scripted_profile(lqr, name: str, *, max_forward_vel_m_s: float, max_yaw_rate_rad_s: float):
+def scripted_profile(name: str, *, max_forward_vel_m_s: float, max_yaw_rate_rad_s: float):
     """Deterministic command sources, so CI can drive without a keyboard."""
 
-    stopped = lqr.DriveCommand()
+    stopped = control.DriveCommand()
 
     if name == "none":
         return None
@@ -231,7 +167,7 @@ def scripted_profile(lqr, name: str, *, max_forward_vel_m_s: float, max_yaw_rate
         def spin(time_s: float):
             if time_s < 2.0:
                 return stopped
-            return lqr.DriveCommand(0.0, max_yaw_rate_rad_s)
+            return control.DriveCommand(0.0, max_yaw_rate_rad_s)
 
         return spin
 
@@ -245,8 +181,8 @@ def scripted_profile(lqr, name: str, *, max_forward_vel_m_s: float, max_yaw_rate
                 return stopped
             phase_s = (time_s - settle_s) % (leg_s + turn_s)
             if phase_s < leg_s:
-                return lqr.DriveCommand(max_forward_vel_m_s, 0.0)
-            return lqr.DriveCommand(0.0, max_yaw_rate_rad_s)
+                return control.DriveCommand(max_forward_vel_m_s, 0.0)
+            return control.DriveCommand(0.0, max_yaw_rate_rad_s)
 
         return square
 
@@ -254,7 +190,6 @@ def scripted_profile(lqr, name: str, *, max_forward_vel_m_s: float, max_yaw_rate
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    lqr = load_lqr_sim()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--out-dir", type=Path)
@@ -317,9 +252,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--conventions", type=Path, default=DEFAULT_CONVENTIONS)
-    lqr.add_drive_arguments(parser)
+    cli.add_drive_arguments(parser)
     args = parser.parse_args(argv)
-    args.lqr = lqr
     if args.drive_profile == "none" and args.no_viewer:
         parser.error("--no-viewer needs a --drive-profile; there is no keyboard to read")
     return args
@@ -344,21 +278,13 @@ def timestamp() -> str:
 
 def print_controls() -> None:
     print("  hold to drive; release to coast to a stop")
-    print("  up / down  or  W / S      drive forward / back")
-    print("  left / right  or  A / D   turn left / right")
+    print("  up / down                drive forward / back")
+    print("  left / right             turn left / right")
     print("  space                     stop")
     print("  Finn keeps balancing whether or not you touch any of them.")
-    stuck = unpinnable_drive_letters()
-    if stuck:
-        print(
-            f"  prefer the arrows in the viewer: {' and '.join(stuck)} also toggle a "
-            "MuJoCo render flag that no API lets us suppress (rendering only, "
-            "driving is unaffected)."
-        )
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
-    lqr = args.lqr
     if not args.model.exists():
         raise DriveError(f"missing model XML: {args.model}")
 
@@ -390,8 +316,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         forward_sign=1.0,
         yaw_axis=1,
         yaw_sign=1.0,
-        yaw_left_actuator_sign=lqr.yaw_left_actuator_sign(args),
-        drive=lqr.drive_limits_from_args(args),
+        yaw_left_actuator_sign=cli.yaw_left_actuator_sign(args),
+        drive=cli.drive_limits_from_args(args),
     )
     lqr.validate_timing(model, config)
     lqr.validate_linearization_torque(config, handles)
@@ -418,7 +344,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     key_callback = None
     if args.drive_profile == "none":
         keyboard = KeyboardDrive(
-            lqr,
             poll_key_state=not args.no_key_state_polling,
             hold_window_s=args.key_hold_window_s,
             max_forward_vel_m_s=config.drive.max_forward_vel_m_s,
@@ -429,7 +354,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         print_controls()
     else:
         command_source = scripted_profile(
-            lqr,
             args.drive_profile,
             max_forward_vel_m_s=config.drive.max_forward_vel_m_s,
             max_yaw_rate_rad_s=config.drive.max_yaw_rate_rad_s,
@@ -443,7 +367,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         live.log_row(row["time_s"], row)
 
     try:
-        rows, metrics = lqr.run_closed_loop(
+        rows, metrics = cli.run_closed_loop(
             model,
             handles,
             estimator,
@@ -452,7 +376,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             gain_yaw=gain_yaw,
             command_source=command_source,
             key_callback=key_callback,
-            on_viewer_sync=ViewerFlagKeeper() if keyboard is not None else None,
             on_tick=None if live is None else stream,
             show_viewer=not args.no_viewer,
             realtime=not args.no_realtime,
@@ -470,16 +393,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
     csv_path = out_dir / "timeseries.csv"
     report_path = out_dir / "report.json"
-    lqr.write_timeseries(csv_path, rows)
+    reporting.write_timeseries(csv_path, rows)
 
     result: dict[str, object] = {
         "status": "pass" if metrics["pass"] else "failed",
         "out_dir": portable_path(out_dir),
         "model": portable_path(args.model),
-        "model_sha256_12": lqr.sha256_12(args.model),
+        "model_sha256_12": paths.sha256_12(args.model),
         "drive_profile": args.drive_profile,
         "key_state_polling": key_state_polling,
-        "drive_limits": lqr.asdict(config.drive),
+        "drive_limits": asdict(config.drive),
         "lqr": {"gain": gain.tolist(), "yaw_gain": gain_yaw},
         "yaw": {"a": a_yaw, "b": b_yaw},
         "metrics": metrics,

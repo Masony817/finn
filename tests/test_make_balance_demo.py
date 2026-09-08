@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from finn import lqr as cli
+from finn import simulation as rls
+
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "sim" / "generated" / "seeded" / "latest" / "finn.seeded.sim.xml"
 
@@ -27,7 +30,6 @@ def _load(name: str, script: Path):
 
 
 demo = _load("make_balance_demo", ROOT / "tools" / "make_balance_demo.py")
-rls = _load("run_lqr_sim", ROOT / "tools" / "run_lqr_sim.py")
 
 
 def _renderer_or_skip(width: int, height: int):
@@ -99,7 +101,7 @@ def test_on_tick_hook_reaches_the_simulation_and_defaults_to_off():
 
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    args = rls.parse_args(["--model", str(MODEL), "--duration-s", "0.2"])
+    args = cli.parse_args(["--model", str(MODEL), "--duration-s", "0.2"])
     config = rls.SimConfig(
         control_dt_s=args.control_dt_s,
         duration_s=0.2,
@@ -116,8 +118,8 @@ def test_on_tick_hook_reaches_the_simulation_and_defaults_to_off():
         forward_sign=args.forward_sign,
         yaw_axis=args.yaw_axis,
         yaw_sign=args.yaw_sign,
-        yaw_left_actuator_sign=rls.yaw_left_actuator_sign(args),
-        drive=rls.drive_limits_from_args(args),
+        yaw_left_actuator_sign=cli.yaw_left_actuator_sign(args),
+        drive=cli.drive_limits_from_args(args),
     )
     estimator = rls.calibrated_estimator(model, handles, config)
     gain = rls.np.array([[60.0, 9.0, 13.0]])
@@ -129,8 +131,8 @@ def test_on_tick_hook_reaches_the_simulation_and_defaults_to_off():
         seen.append(row)
         data.xfrc_applied[body_id, 0] = 5.0
 
-    pushed_rows, _ = rls.run_closed_loop(model, handles, estimator, config, gain, on_tick=hook)
-    quiet_rows, _ = rls.run_closed_loop(model, handles, estimator, config, gain)
+    pushed_rows, _ = cli.run_closed_loop(model, handles, estimator, config, gain, on_tick=hook)
+    quiet_rows, _ = cli.run_closed_loop(model, handles, estimator, config, gain)
 
     assert len(seen) == len(pushed_rows)
     assert seen[0] is pushed_rows[0], "the hook receives the row it can annotate"

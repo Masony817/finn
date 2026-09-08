@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import copy
-import importlib.util
 import math
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 import yaml
 
+from finn import model as ppm
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "postprocess_mujoco.py"
-SPEC = importlib.util.spec_from_file_location("postprocess_mujoco", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-ppm = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = ppm
-SPEC.loader.exec_module(ppm)
 
 
 BASE_CONFIG = {

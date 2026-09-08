@@ -75,23 +75,6 @@ def main():
 
     results.append(check("mujoco", mujoco_check))
 
-    print("\nml (optional, requires --extra ml):")
-    try:
-        import torch  # pyright: ignore[reportMissingImports] -- torch is optional for now
-
-        print(f"  OK    torch: {torch.__version__}")
-        if sys.platform == "linux":
-            cuda = torch.cuda.is_available()
-            print(f"  {'OK   ' if cuda else 'WARN '} cuda available: {cuda}")
-            if cuda:
-                print(f"        device: {torch.cuda.get_device_name(0)}")
-        elif sys.platform == "darwin":
-            mps = torch.backends.mps.is_available()
-            print(f"  {'OK   ' if mps else 'WARN '} mps available: {mps}")
-        results.append(cuda if sys.platform == "linux" else mps)
-    except ImportError:
-        print("  SKIP  torch not installed (run `uv sync --extra ml` to add)")
-
     print()
     failed = sum(1 for r in results if r is False)
     if failed:

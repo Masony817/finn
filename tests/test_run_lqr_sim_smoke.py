@@ -7,20 +7,16 @@ apart -- on a fresh clone in CI, not to assert controller quality.
 
 from __future__ import annotations
 
-import importlib.util
 import math
-import sys
 from pathlib import Path
+
+from finn import control
+from finn import lqr as cli
+from finn import simulation as rls
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "run_lqr_sim.py"
 MODEL = ROOT / "sim" / "generated" / "seeded" / "latest" / "finn.seeded.sim.xml"
-
-SPEC = importlib.util.spec_from_file_location("run_lqr_sim", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-rls = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = rls
-SPEC.loader.exec_module(rls)
 
 
 def test_committed_seed_model_is_present():
@@ -29,8 +25,8 @@ def test_committed_seed_model_is_present():
 
 
 def test_viewer_is_opt_in():
-    assert rls.parse_args([]).viewer is False
-    assert rls.parse_args(["--viewer"]).viewer is True
+    assert cli.parse_args([]).viewer is False
+    assert cli.parse_args(["--viewer"]).viewer is True
 
 
 def test_seeded_model_has_expected_forward_balance_trim():
@@ -51,7 +47,7 @@ def test_experiments_start_in_ground_contact():
 
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    config = rls.parse_args(["--model", str(MODEL)])
+    config = cli.parse_args(["--model", str(MODEL)])
     sim_config = _sim_config(config, handles, model)
     data = rls.mujoco.MjData(model)
 
@@ -71,7 +67,7 @@ def test_odometry_forward_sign_matches_world_motion():
 
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    config = rls.parse_args(["--model", str(MODEL)])
+    config = cli.parse_args(["--model", str(MODEL)])
     sim_config = _sim_config(config, handles, model)
 
     data = rls.mujoco.MjData(model)
@@ -101,7 +97,7 @@ def test_identified_plant_keeps_the_inverted_pendulum_mode():
 
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    config = rls.parse_args(["--model", str(MODEL)])
+    config = cli.parse_args(["--model", str(MODEL)])
     sim_config = _sim_config(config, handles, model)
     estimator = rls.calibrated_estimator(model, handles, sim_config)
 
@@ -133,13 +129,13 @@ def _sim_config(args, handles, model):
         forward_sign=args.forward_sign,
         yaw_axis=args.yaw_axis,
         yaw_sign=args.yaw_sign,
-        yaw_left_actuator_sign=rls.yaw_left_actuator_sign(args),
-        drive=rls.drive_limits_from_args(args),
+        yaw_left_actuator_sign=cli.yaw_left_actuator_sign(args),
+        drive=cli.drive_limits_from_args(args),
     )
 
 
 def test_lqr_sim_runs_on_committed_model(tmp_path: Path):
-    args = rls.parse_args(
+    args = cli.parse_args(
         [
             "--model",
             str(MODEL),
@@ -150,7 +146,7 @@ def test_lqr_sim_runs_on_committed_model(tmp_path: Path):
             "--no-plot",
         ]
     )
-    result = rls.run(args)
+    result = cli.run(args)
 
     assert result["status"] in {"pass", "failed"}  # ran to completion, not errored
     gain = result["lqr"]["gain"]  # type: ignore[index]
@@ -161,7 +157,7 @@ def test_lqr_sim_runs_on_committed_model(tmp_path: Path):
 
 
 def test_default_position_hold_limits_30_second_drift(tmp_path: Path):
-    args = rls.parse_args(
+    args = cli.parse_args(
         [
             "--model",
             str(MODEL),
@@ -172,7 +168,7 @@ def test_default_position_hold_limits_30_second_drift(tmp_path: Path):
             "--no-plot",
         ]
     )
-    result = rls.run(args)
+    result = cli.run(args)
     metrics = result["metrics"]
 
     assert result["status"] == "pass"
@@ -182,7 +178,7 @@ def test_default_position_hold_limits_30_second_drift(tmp_path: Path):
 
 def test_firmware_header_is_exported_from_a_passing_sim(tmp_path: Path):
     header = tmp_path / "lqr_seeded_config.h"
-    args = rls.parse_args(
+    args = cli.parse_args(
         [
             "--model",
             str(MODEL),
@@ -196,7 +192,7 @@ def test_firmware_header_is_exported_from_a_passing_sim(tmp_path: Path):
         ]
     )
 
-    result = rls.run(args)
+    result = cli.run(args)
     text = header.read_text(encoding="utf-8")
 
     assert result["status"] == "pass"
@@ -217,7 +213,7 @@ def test_firmware_header_is_exported_from_a_passing_sim(tmp_path: Path):
 def _rollout(command_source=None, duration_s: float = 2.0):
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    args = rls.parse_args(["--model", str(MODEL), "--duration-s", str(duration_s)])
+    args = cli.parse_args(["--model", str(MODEL), "--duration-s", str(duration_s)])
     config = _sim_config(args, handles, model)
     estimator = rls.calibrated_estimator(model, handles, config)
     a_matrix, b_matrix = rls.linearize_balance_dynamics(model, handles, estimator, config)
@@ -236,7 +232,7 @@ def _rollout(command_source=None, duration_s: float = 2.0):
             rls.np.array([[float(args.r_yaw)]]),
         ).item()
     )
-    return rls.run_closed_loop(
+    return cli.run_closed_loop(
         model,
         handles,
         estimator,
@@ -256,7 +252,7 @@ def test_balance_runs_identically_with_no_command_source():
     """
 
     without, _ = _rollout(command_source=None)
-    with_stop, _ = _rollout(command_source=lambda _t: rls.DriveCommand(0.0, 0.0))
+    with_stop, _ = _rollout(command_source=lambda _t: control.DriveCommand(0.0, 0.0))
 
     assert len(without) == len(with_stop)
     for left, right in zip(without, with_stop, strict=True):
@@ -274,7 +270,7 @@ def test_positive_yaw_torque_turns_the_model_left():
 
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    args = rls.parse_args(["--model", str(MODEL)])
+    args = cli.parse_args(["--model", str(MODEL)])
     config = _sim_config(args, handles, model)
     estimator = rls.calibrated_estimator(model, handles, config)
 
@@ -295,7 +291,7 @@ def test_positive_yaw_torque_turns_the_model_left():
 def test_identified_yaw_plant_is_a_damped_integrator():
     model = rls.mujoco.MjModel.from_xml_path(str(MODEL))
     handles = rls.inspect_model(model)
-    args = rls.parse_args(["--model", str(MODEL)])
+    args = cli.parse_args(["--model", str(MODEL)])
     config = _sim_config(args, handles, model)
     estimator = rls.calibrated_estimator(model, handles, config)
 
@@ -317,10 +313,10 @@ def test_balance_survives_a_hostile_command_source():
         raise RuntimeError("policy crashed")
 
     def not_finite(_time_s):
-        return rls.DriveCommand(float("nan"), float("inf"))
+        return control.DriveCommand(float("nan"), float("inf"))
 
     def absurd(_time_s):
-        return rls.DriveCommand(1e6, -1e6)
+        return control.DriveCommand(1e6, -1e6)
 
     def wrong_type(_time_s):
         return (1.0, 2.0)

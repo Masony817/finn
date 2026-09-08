@@ -43,13 +43,14 @@ free. Use it only for runs that really were externally supported.
 ## Control layering
 
 The balance loop is always on. Everything that steers Finn sits above it and can
-only move a bounded reference, never a torque. WASD teleop is the first tenant of
+only move a bounded reference, never a torque. Keyboard teleop is the first tenant of
 that layer; an HRI or navigation policy is meant to be the next one, and the
-boundary is shaped so a slow or crashed tenant degrades to "no command" rather
-than to "no balance".
+boundary accepts bounded references. Current callbacks run synchronously and
+must return immediately; a slow producer must publish through a separate worker
+before it can use this interface.
 
 ```
-L3  command sources   WASD teleop | scripted profile | (later) a policy
+L3  command sources   keyboard teleop | scripted profile | (later) a policy
       |               returns DriveCommand(forward_vel_m_s, yaw_rate_rad_s)
 L2  command arbiter   holds, clamps, slew-limits, ramps stale commands to zero
       |               output is a reference, never a torque
@@ -71,9 +72,9 @@ Five invariants, each with a test named for it in
 3. **L2 fails closed and fails soft.** A source that raises, returns non-finite or
    wrong-typed values, or goes silent is held briefly and then *ramped* to zero.
    Ramped, not stepped: a step is itself a disturbance the balance loop must reject.
-4. **L2 decouples rates.** L1 runs at 100 Hz; a policy will run at 5-30 Hz with
-   jitter. Sampling is non-blocking and the last command is held, so a slow tenant
-   cannot stall a control tick.
+4. **L2 holds intermittent commands.** L1 runs at 100 Hz and continues ramping
+   toward the last requested target between samples, until timeout. Callbacks
+   must return immediately; this interface does not isolate blocking producers.
 5. **Balance has torque priority.** `allocate_wheel_torques` clamps the balance
    torque first and gives yaw only the leftover headroom, so a saturated balance
    loop steers not at all rather than losing authority to a turn request.
@@ -83,28 +84,8 @@ is why the teleop release path is also the policy-failure path.
 
 ## Viewer keys
 
-**The MuJoCo viewer binds a shortcut to every letter A-Z**, so no teleop scheme
-built on letters can avoid a collision. `key_callback` is called *in addition to*
-the viewer's own handling, not instead of it, and there is no way to consume the
-event. W is wireframe, S is shadow, A is auto connect, D is static body.
-
-None of these touch control - they are rendering flags, and `data.ctrl` is
-rewritten every tick regardless - but the scene strobes while you drive.
-
-Only half of it can be suppressed, and the split is worth knowing before trying
-again. A and D are `MjvOption` vis flags, reachable as `Handle.opt`, so
-`ViewerFlagKeeper` pins them back before each `sync()`. W and S are `MjvScene`
-*render* flags, and the passive viewer exposes no render scene at all: `Handle`
-has `opt`, `cam`, `perturb`, `user_scn`, `m`, `d`, `viewport`, and `user_scn` is a
-separate overlay for custom geometry, not the scene the viewer draws with. The
-internal `_Simulate` does not expose one either.
-
-**So arrow keys are the scheme to prefer in the viewer.** WASD still drives, and
-`drive_lqr_sim.py` says at startup which letters it could not tame.
-
-Flag indices are looked up from `mjVISSTRING`/`mjRNDSTRING` rather than hardcoded,
-so a release that moves a shortcut moves the pin with it, and a test fails if a
-render scene ever appears on `Handle` and makes W and S pinnable.
+Use arrow keys to drive and space to stop. MuJoCo binds every letter to a
+rendering shortcut, so Finn does not bind WASD or maintain viewer-flag workarounds.
 
 ## Hold to drive
 
@@ -122,11 +103,9 @@ taken instead: `key_callback` runs on the thread holding the GL context, so the
 first keypress captures it with `glfw.get_current_context()`. After that
 `held()` reads real state, and holding a key holds the command.
 
-Two things make this safe rather than clever. Reading key state off-thread races
-the render loop by at most a frame, which a 100 Hz loop cannot notice. And every
-GLFW call is guarded, falling back to the latch, so a closed window or an
-unusable handle degrades driving instead of ending the run. `report.json` records
-`key_state_polling` so a run says which path it actually used.
+GLFW calls fall back to the latch on Python exceptions; this is a best-effort
+simulator UI adapter, not a hardware command transport or a thread-safety
+guarantee. `report.json` records `key_state_polling`.
 
 ## Judging a driven rollout
 
@@ -228,10 +207,16 @@ arrived at the other end of the USB cable.
 
 ## Host tooling
 
-`tools/*.py` and `firmware/finn-mcu/tools/*.py` are standalone scripts, not an
-importable package, so tests load them through
-`importlib.util.spec_from_file_location`. Scopik is a real workspace package and
-is imported normally. Adding a script means following the first pattern.
+Shared Finn Python lives in `src/finn/` and is installed by `uv sync`.
+`control.py` has no simulator dependency; `simulation.py` owns MuJoCo dynamics;
+`lqr.py` owns validation/export; `reporting.py` assesses traces and writes plots.
+`model.py` applies measured physics, and `telemetry.py` shares sysid parsing.
+The existing CLI paths remain wrappers. Remaining standalone tools are loaded
+by file in tests only; production callers use ordinary package imports.
+
+The builder's optional Batch 2 replay uses Scopik and `config/viz/finn.yaml`.
+Replay rejects non-finite commands and non-increasing timestamps; its report
+records integration-time adjustments caused by timestep rounding and capped gaps.
 
 Rerun is pinned to 0.34.x and every call into its API lives in
 `packages/scopik/src/scopik/rrlog/`. Keep it there: the SDK is pre-1.0 and moves,

@@ -23,7 +23,8 @@ sim/
   model/finn/        Hand-authored MuJoCo model, meshes (STL), and scene
   config/            Canonical measurements + postprocess config (source of truth)
   generated/         Generated seed models (only the reference bundle is committed)
-tools/               Host-side Python: build the seed model, run the LQR sim,
+src/finn/            Shared control, simulation, model, reporting, telemetry
+tools/               Host-side CLIs: build the seed model, run the LQR sim,
                      postprocess sysid, environment check
 tests/               pytest suite for the host tools
 config/              Frame/sign contracts, Scopik profiles, and local motor config
@@ -35,7 +36,7 @@ Requires Python 3.11 and [uv](https://docs.astral.sh/uv/). Nothing else is
 needed for the sim — MuJoCo and SciPy install as self-contained wheels.
 
 ```bash
-uv sync --extra dev                     # create .venv from the locked deps
+uv sync --locked --extra dev            # create .venv from the locked deps
 uv run python tools/check_env.py        # verify the toolchain imports
 uv run python tools/run_lqr_sim.py      # run the LQR balance sim
 ```
@@ -146,7 +147,7 @@ is build-verified on every push.
 ```bash
 uv run ruff check .          # lint
 uv run ruff format .         # format
-uv run pytest -q             # host tests
+uv run pytest -q             # host tests; requires a C++ compiler
 ```
 
 CI runs lint, format-check, tests, and the firmware build on every push to

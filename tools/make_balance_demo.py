@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import importlib.util
 import json
 import math
 import sys
@@ -20,6 +19,10 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
+
+from finn import control, paths, reporting
+from finn import lqr as cli
+from finn import simulation as lqr
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "sim/generated/seeded/latest/finn.seeded.sim.xml"
@@ -64,20 +67,6 @@ def portable_path(path: Path) -> str:
         return str(resolved.relative_to(REPO_ROOT))
     except ValueError:
         return str(resolved)
-
-
-def load_lqr_sim():
-    """Load run_lqr_sim.py, which is a script rather than an importable module."""
-
-    path = REPO_ROOT / "tools/run_lqr_sim.py"
-    spec = importlib.util.spec_from_file_location("finn_run_lqr_sim", path)
-    if spec is None or spec.loader is None:
-        raise DemoError(f"cannot load {portable_path(path)}")
-    module = importlib.util.module_from_spec(spec)
-    # @dataclass resolves annotations through sys.modules, so register before executing.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 @dataclass(frozen=True)
@@ -179,7 +168,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
-    lqr = load_lqr_sim()
 
     if not args.model.exists():
         raise DemoError(f"missing model XML: {args.model}")
@@ -209,8 +197,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         forward_sign=1.0,
         yaw_axis=1,
         yaw_sign=1.0,
-        yaw_left_actuator_sign=lqr.yaw_left_actuator_sign(args),
-        drive=lqr.DriveLimits(),
+        yaw_left_actuator_sign=cli.yaw_left_actuator_sign(args),
+        drive=control.DriveLimits(),
     )
     lqr.validate_timing(model, config)
     lqr.validate_linearization_torque(config, handles)
@@ -240,7 +228,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     )
 
     with recorder:
-        rows, metrics = lqr.run_closed_loop(
+        rows, metrics = cli.run_closed_loop(
             model, handles, estimator, config, gain, on_tick=recorder
         )
 
@@ -251,7 +239,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         status = "failed"
 
     csv_path = out_dir / "timeseries.csv"
-    lqr.write_timeseries(csv_path, rows)
+    reporting.write_timeseries(csv_path, rows)
     artifacts = {"timeseries_csv": portable_path(csv_path)}
 
     theme = LIGHT_THEME if args.theme == "light" else DARK_THEME
@@ -287,7 +275,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "status": status,
         "out_dir": portable_path(out_dir),
         "model": portable_path(args.model),
-        "model_sha256_12": lqr.sha256_12(args.model),
+        "model_sha256_12": paths.sha256_12(args.model),
         "gain": gain.tolist(),
         "trim_pitch_rad": trim_pitch_rad,
         "torque_limit_nm": handles.torque_limit_nm,

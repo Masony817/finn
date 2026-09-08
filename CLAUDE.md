@@ -35,7 +35,8 @@ sim/
   model/finn/               hand-authored MJCF (finn_robot.xml, scene.xml) + STL assets
   config/                   finn_measurements.yaml (source of truth), mujoco_postprocess.yaml
   generated/seeded/latest/  committed seed-model bundle the sim and firmware export load
-tools/                      host Python: seed-model build, LQR sim and teleop, postprocess, env check
+src/finn/                   importable control, simulation, model, reporting, telemetry
+tools/                      host CLIs: seed-model build, LQR sim and teleop, env check
 packages/scopik/            standalone sim-to-real gap profiler on Rerun (uv workspace member)
 config/
   finn_conventions.yaml     sign/frame contract shared by model, Scopik, and firmware
@@ -52,7 +53,7 @@ logs/                       run artifacts, gitignored
 Python 3.11 + [uv](https://docs.astral.sh/uv/). Everything runs through `uv run`.
 
 ```bash
-uv sync --extra dev                       # locked install; --extra hardware adds moteus tooling
+uv sync --locked --extra dev              # locked install; --extra hardware adds moteus tooling
 uv run python tools/check_env.py          # toolchain smoke check
 uv run ruff check . && uv run ruff format .
 uv run pytest -q                          # host tests (root tests/ + packages/scopik/tests/)
@@ -76,9 +77,9 @@ uv run --isolated --python /opt/homebrew/bin/python3 \
 ```
 
 `drive_lqr_sim.py` needs the same framework Python to read the keyboard, since it
-drives from the viewer's key callback. Hold a key to drive; prefer the arrow keys,
-since MuJoCo binds a shortcut to every letter and W and S also toggle wireframe
-and shadow. It opens a live Scopik dashboard by
+drives from the viewer's key callback. Hold an arrow key to drive,
+since MuJoCo binds a shortcut to every letter. WASD is not supported.
+It opens a live Scopik dashboard by
 default; pass `--no-scopik` to skip it, or `--scopik-rrd PATH` to record instead.
 
 On Linux, `uv run python tools/run_lqr_sim.py --viewer` is enough.
@@ -150,47 +151,10 @@ Short LQR captures are the next controlled dataset.
 Never write a comment that restates the code. Default to no comment; when one is
 warranted, default to one line.
 
-Redundant commenting is the most common defect in agent-written code, and the pull
-toward it is strong enough to survive a general instruction to stop. So this
-section is checks and examples rather than adjectives - apply it mechanically, not
-by feel.
-
-**A comment earns its place only by recording one of:**
-
-- why the code is this way and not the obvious way - name the ticket, benchmark, or
-  bug that decided it
-- a non-obvious invariant or precondition a caller has to hold
-- the specific failure a guard prevents
-- an external contract the code cannot state itself: wire format, provider quirk,
-  library nullability
-
-**Length is one line.** A second line requires a reader who would otherwise get it
-wrong. A fifth means the code is unclear - fix the code.
-
-**The delete test** - run it on every comment you write. Delete the comment and
-re-read the code. If the code still conveys everything the comment did, it stays
-deleted. A comment survives only by carrying what the code cannot: a reason, a
-constraint, a measurement, or a bug.
-
-Fails the test, from the shape of code in this repo:
-
-```cpp
-// clamp the value to the limits
-float clampFloat(const float value, const float lower, const float upper);
-// wrap to +/- pi
-float wrapPi(float value);
-```
-
-Earns its place, because deleting it loses a measurement or a decision the code
-cannot state:
-
-```cpp
-constexpr float kMoteusWatchdogTimeoutS = 0.05f;  // 5x the 100 Hz control period
-```
-
-```python
-# mjpython needs a framework Python; uv's standalone build hides the shared library.
-```
+A comment must record a reason, non-obvious invariant, failure prevented, or
+external contract. Delete it if the code already conveys the same information.
+Default to one line; keep derivations and longer investigation notes in `docs/`.
+Do not describe planned behavior as an implemented guarantee.
 
 One carve-out, and it is narrow: physical provenance in `sim/config/finn_measurements.yaml`,
 `config/finn_conventions.yaml`, and `lqr_safety_config.h` is data, not commentary. A measured constant's
@@ -201,14 +165,15 @@ those files to satisfy this section.
 
 ## Area conventions
 
-### Host Python (`tools/`, `firmware/finn-mcu/tools/`)
+### Host Python (`src/finn/`, `tools/`, `firmware/finn-mcu/tools/`)
 
 - Ruff, line length 100, `select = ["E","F","I","N","UP","B","SIM","RUF"]`.
   Per-file ignores go in `pyproject.toml` with a comment saying why.
-- Scripts, not a package: `from __future__ import annotations`, module docstring
-  first line explains the job, module-level `REPO_ROOT = Path(__file__).resolve().parents[N]`,
-  constants in caps near the top, `argparse` in `parse_args`, `main()` returning an
-  exit code.
+- Put reusable Finn logic in `src/finn/` with ordinary imports. Keep CLI wrappers
+  thin; do not dynamically import scripts from production code. Keep control
+  arithmetic independent of MuJoCo and hardware access.
+- Use `from __future__ import annotations`, a job-focused module docstring, caps
+  for constants, `argparse` in `parse_args`, and `main()` returning an exit code.
 - Expected failures raise a named error (`PostprocessError`,
   `BuildSeededModelError`) carrying a user-facing message, rather than a traceback.
 - Generated reports use repo-relative paths via the local `portable_path` helper
@@ -223,15 +188,16 @@ is still running. Adapting it to a robot means writing a YAML profile, not editi
 the package. All Rerun API usage is confined to `src/scopik/rrlog/`; keep it there so
 SDK churn stays local. Rerun is pinned `>=0.34,<0.35`.
 
-Before adding a feature, check that a robot milestone actually needs it - plugin
-registries, live streaming, and 3D reconstruction were scoped out on purpose.
+Before adding a feature, check that a robot milestone actually needs it. Generic
+plugins and 3D reconstruction remain out of scope; live scalar logging serves teleop.
 Read `packages/scopik/README.md` first; it is the profile reference.
 
 ### Firmware (`firmware/finn-mcu/`)
 
 - One directory per sketch, numbered by bring-up order, with a matching
-  `[env:*]` in `platformio.ini` using `build_src_filter` to select it. Adding a
-  sketch needs no CI change: the workflow discovers every environment.
+  `[env:*]` in `platformio.ini`. Set both `build_src_filter` (relative to `src/`)
+  and `check_src_filters` (relative to the firmware project) to the sketch.
+  CI discovers every environment; no workflow edit is needed.
 - Google-ish C++ style as written: anonymous namespace for internals, `k`-prefixed
   `constexpr` constants with explicit units in the name, `static_assert` for
   invariants that must hold between the generated header and the code.
@@ -270,8 +236,9 @@ CI runs two independent gates on push to `main`/`dev` and on PRs:
 
 Test conventions:
 
-- `tools/` scripts are loaded with `importlib.util.spec_from_file_location`, since
-  they are not importable modules. scopik is imported normally.
+- Import Finn and Scopik normally. Load remaining standalone CLI scripts by file
+  only in tests. `tests/test_firmware_control.py` requires a C++ compiler and
+  executes shared firmware arithmetic, including Python/C++ command-trace parity.
 - `tests/test_finn_lqr_contract.py` asserts that the conventions file, seeded
   model, generated header, and firmware still agree. If it fails, something in the
   chain was regenerated without its dependents - fix the chain, not the test.

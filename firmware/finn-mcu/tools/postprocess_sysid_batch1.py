@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import math
-import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +13,10 @@ from typing import Any
 import numpy as np
 import yaml
 from scipy.optimize import least_squares, lsq_linear
+
+from finn.telemetry import read_events as read_events
+from finn.telemetry import read_rows as read_batch1_rows
+from finn.telemetry import read_schema as read_schema
 
 MOTION_VELOCITY_REV_S = 0.02
 MOTION_POSITION_REV = 0.01
@@ -125,71 +127,6 @@ class PoweredInertiaFit:
     confidence: str
     bound_active: bool
     notes: list[str]
-
-
-def read_batch1_rows(telemetry: Path) -> list[dict[str, str]]:
-    if not telemetry.exists():
-        return []
-
-    lines = telemetry.read_text().splitlines()
-    data_lines = [line for line in lines if line.startswith("data,")]
-    if not data_lines:
-        return []
-
-    header_index = next(
-        (index for index, line in enumerate(data_lines) if line.startswith("data,t_us,")),
-        None,
-    )
-    if header_index is None:
-        return []
-
-    csv_lines = data_lines[header_index:]
-    return list(csv.DictReader(csv_lines))
-
-
-def read_schema(telemetry: Path) -> str | None:
-    if not telemetry.exists():
-        return None
-    for line in telemetry.read_text().splitlines():
-        if line.startswith("schema,"):
-            parts = line.split(",", 1)
-            return parts[1] if len(parts) == 2 else None
-    return None
-
-
-def read_events(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-
-    events: list[dict[str, Any]] = []
-    for line in path.read_text().splitlines():
-        if not line.startswith("event,"):
-            continue
-        parts = line.split(",")
-        if len(parts) < 4:
-            continue
-        event: dict[str, Any] = {
-            "t_us": _to_float(parts[1]),
-            "event": parts[2],
-            "state": parts[3],
-            "detail": ",".join(parts[4:]) if len(parts) > 4 else "",
-            "fields": parts[4:],
-        }
-        if parts[2] == "segment_start" and len(parts) >= 5:
-            event["phase"] = parts[4]
-        if parts[2] == "segment_end":
-            if len(parts) >= 7:
-                event["phase"] = parts[4]
-                event["reason"] = parts[5]
-                event["elapsed_ms"] = _to_float(parts[6])
-            else:
-                detail = event["detail"]
-                parsed = dict(re.findall(r"([a-zA-Z_]+)=([^,]+)", detail))
-                event.update(parsed)
-                if "elapsed_ms" in event:
-                    event["elapsed_ms"] = _to_float(str(event["elapsed_ms"]))
-        events.append(event)
-    return events
 
 
 def rows_as_numeric(rows: list[dict[str, str]]) -> list[dict[str, Any]]:

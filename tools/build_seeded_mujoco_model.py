@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import datetime as dt
-import importlib.util
 import json
 import math
 import sys
@@ -19,7 +17,9 @@ from typing import Any
 
 import yaml
 
-RAD_PER_REV = 2.0 * math.pi
+from finn import model as ppm
+from finn.paths import portable_path
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SYSID_ROOT = Path("logs/finn-mcu/sysid")
 DEFAULT_MEASUREMENTS = Path("sim/config/finn_measurements.yaml")
@@ -169,7 +169,6 @@ def build_seeded_model(args: argparse.Namespace) -> dict[str, Any]:
     if args.report_only:
         validation["status"] = "report_only"
     else:
-        ppm = load_postprocess_mujoco()
         skip_mujoco_validation = not args.validate_mujoco or bool(missing_assets)
         ok, postprocess_report = ppm.postprocess(
             robot_path=robot_path,
@@ -609,118 +608,18 @@ def run_mujoco_cli_checks(xml_path: Path) -> dict[str, Any]:
 
 
 def replay_batch2_open_loop(xml_path: Path, run_dir: Path) -> dict[str, Any]:
-    import mujoco
-    import numpy as np
+    from scopik.gap import run_gap
+    from scopik.profile import load_profile
 
-    telemetry_rows = read_batch2_telemetry(run_dir / "telemetry.csv")
-    if len(telemetry_rows) < 2:
-        raise BuildSeededModelError(f"not enough Batch 2 telemetry rows in {run_dir}")
-
-    model = mujoco.MjModel.from_xml_path(str(xml_path))
-    data = mujoco.MjData(model)
-    sensor_names = {
-        "left_vel_rev_s": "wheel_left_vel",
-        "right_vel_rev_s": "wheel_right_vel",
-        "yaw_rate_rad_s": "imu_gyro",
-        "pitch_rate_rad_s": "imu_gyro",
-        "forward_accel_m_s2": "imu_accelerometer",
-    }
-    samples: dict[str, list[tuple[float, float]]] = {key: [] for key in sensor_names}
-    previous_t = float(telemetry_rows[0]["t_us"]) / 1_000_000.0
-
-    for row in telemetry_rows[1:]:
-        current_t = float(row["t_us"]) / 1_000_000.0
-        dt_s = max(0.0, min(0.1, current_t - previous_t))
-        previous_t = current_t
-        data.ctrl[0] = float(row.get("left_cmd_nm") or 0.0)
-        data.ctrl[1] = float(row.get("right_cmd_nm") or 0.0)
-        step_count = max(1, round(dt_s / model.opt.timestep))
-        for _ in range(step_count):
-            mujoco.mj_step(model, data)
-
-        left_vel = sensor_scalar(model, data, "wheel_left_vel") / RAD_PER_REV
-        right_vel = sensor_scalar(model, data, "wheel_right_vel") / RAD_PER_REV
-        gyro = sensor_vector(model, data, "imu_gyro", 3)
-        accel = sensor_vector(model, data, "imu_accelerometer", 3)
-        samples["left_vel_rev_s"].append((float(row.get("left_vel_rev_s") or 0.0), left_vel))
-        samples["right_vel_rev_s"].append((float(row.get("right_vel_rev_s") or 0.0), right_vel))
-        samples["pitch_rate_rad_s"].append((float(row.get("pitch_rate_rad_s") or 0.0), gyro[0]))
-        samples["yaw_rate_rad_s"].append((float(row.get("yaw_rate_rad_s") or 0.0), gyro[1]))
-        samples["forward_accel_m_s2"].append(
-            (float(row.get("robot_forward_accel_m_s2") or 0.0), accel[2])
-        )
-
-    metrics: dict[str, Any] = {}
-    for key, pairs in samples.items():
-        real = np.array([p[0] for p in pairs], dtype=float)
-        sim = np.array([p[1] for p in pairs], dtype=float)
-        err = sim - real
-        metrics[key] = {
-            "sample_count": len(pairs),
-            "rmse": float(np.sqrt(np.mean(err * err))),
-            "mae": float(np.mean(np.abs(err))),
-            "real_mean": float(np.mean(real)),
-            "sim_mean": float(np.mean(sim)),
-        }
-
+    profile = load_profile(REPO_ROOT / "config/viz/finn.yaml")
+    report = run_gap(profile, run_dir, model_path=xml_path)
     return {
         "status": "ok",
-        "run_dir": str(run_dir),
-        "scope": (
-            "open-loop onboard-signal replay; does not validate world pose, absolute slip, "
-            "endpoint error, or closed-loop LQR transfer"
-        ),
-        "metrics": metrics,
+        "run_dir": portable_path(run_dir),
+        "scope": "open-loop onboard-signal replay using the Finn Scopik profile",
+        "metrics": report.summary,
+        "replay": {} if report.sim_run is None else report.sim_run.meta,
     }
-
-
-def read_batch2_telemetry(path: Path) -> list[dict[str, float]]:
-    if not path.exists():
-        raise BuildSeededModelError(f"missing telemetry: {path}")
-    data_lines = [
-        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("data,")
-    ]
-    header_index = next(
-        (i for i, line in enumerate(data_lines) if line.startswith("data,t_us,")),
-        None,
-    )
-    if header_index is None:
-        raise BuildSeededModelError(f"missing data header in {path}")
-    rows: list[dict[str, float]] = []
-    for row in csv.DictReader(data_lines[header_index:]):
-        numeric: dict[str, float] = {}
-        for key, value in row.items():
-            if key == "data":
-                continue
-            try:
-                numeric[key] = float(value)
-            except (TypeError, ValueError):
-                numeric[key] = math.nan
-        rows.append(numeric)
-    return rows
-
-
-def sensor_scalar(model: Any, data: Any, name: str) -> float:
-    import mujoco
-
-    sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
-    if sensor_id < 0:
-        raise BuildSeededModelError(f"missing sensor: {name}")
-    address = int(model.sensor_adr[sensor_id])
-    return float(data.sensordata[address])
-
-
-def sensor_vector(model: Any, data: Any, name: str, size: int) -> list[float]:
-    import mujoco
-
-    sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, name)
-    if sensor_id < 0:
-        raise BuildSeededModelError(f"missing sensor: {name}")
-    address = int(model.sensor_adr[sensor_id])
-    dim = int(model.sensor_dim[sensor_id])
-    if dim < size:
-        raise BuildSeededModelError(f"sensor {name} has dim {dim}, expected at least {size}")
-    return [float(value) for value in data.sensordata[address : address + size]]
 
 
 def selected_runs_payload(selected: dict[str, list[SysidRun]]) -> dict[str, Any]:
@@ -817,17 +716,6 @@ def replay_markdown(replay: dict[str, Any]) -> str:
             f"samples={metric.get('sample_count')}"
         )
     return "\n".join(lines) + "\n"
-
-
-def load_postprocess_mujoco() -> Any:
-    module_path = REPO_ROOT / "tools" / "postprocess_mujoco.py"
-    spec = importlib.util.spec_from_file_location("postprocess_mujoco", module_path)
-    if spec is None or spec.loader is None:
-        raise BuildSeededModelError(f"could not load {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
