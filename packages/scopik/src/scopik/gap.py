@@ -43,6 +43,8 @@ class GapReport:
                 f" Replay holds {self.sim_run.meta['hold_upright']} upright "
                 "(ideal external support: roll/pitch constrained, yaw and translation free)."
             )
+        if self.sim_run is not None and "timing" in self.sim_run.meta:
+            note += f" Replay timing: {self.sim_run.meta['timing']}."
         return summary_markdown(self.results, scope_note=note)
 
     def diagnosis_markdown(self) -> str:

@@ -112,7 +112,6 @@ class ComparePair:
 
 @dataclass(frozen=True)
 class SceneProfile:
-    geom_filter: str = "visual_if_any"  # or "all"
     real_color: tuple[int, int, int] | None = (230, 110, 60)
     sim_color: tuple[int, int, int] | None = None
 
@@ -277,15 +276,22 @@ def parse_replay(raw: Any, path: Path) -> ReplayProfile | None:
         transform = settings.get("transform")
         validate_transform(transform, path, f"replay.sample.{name}.transform")
         index = settings.get("index")
+        if index is not None and (type(index) is not int or index < 0):
+            raise ProfileError(f"{path}: replay.sample.{name}.index must be a non-negative integer")
+        gravity_compensated = settings.get("gravity_compensated", False)
+        if type(gravity_compensated) is not bool:
+            raise ProfileError(
+                f"{path}: replay.sample.{name}.gravity_compensated must be a boolean"
+            )
         samples.append(
             ReplaySample(
                 name=str(name),
                 sensor=sensor,
-                index=None if index is None else int(index),
+                index=index,
                 transform=transform,
                 unit=str(settings.get("unit", "")),
                 group=str(settings.get("group", "replay")),
-                gravity_compensated=bool(settings.get("gravity_compensated", False)),
+                gravity_compensated=gravity_compensated,
             )
         )
     hold_upright = raw.get("hold_upright")
@@ -321,9 +327,8 @@ def parse_scene(raw: Any, path: Path) -> SceneProfile:
         return SceneProfile()
     if not isinstance(raw, dict):
         raise ProfileError(f"{path}: scene must be a mapping")
-    geom_filter = str(raw.get("geom_filter", "visual_if_any"))
-    if geom_filter not in ("visual_if_any", "all"):
-        raise ProfileError(f"{path}: scene.geom_filter must be 'visual_if_any' or 'all'")
+    if "geom_filter" in raw:
+        raise ProfileError(f"{path}: scene.geom_filter is unsupported; remove it")
 
     def parse_color(
         value: Any, default: tuple[int, int, int] | None
@@ -335,7 +340,6 @@ def parse_scene(raw: Any, path: Path) -> SceneProfile:
         return (int(value[0]), int(value[1]), int(value[2]))
 
     return SceneProfile(
-        geom_filter=geom_filter,
         real_color=parse_color(raw.get("real_color"), SceneProfile.real_color),
         sim_color=parse_color(raw.get("sim_color"), SceneProfile.sim_color),
     )

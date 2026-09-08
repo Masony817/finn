@@ -94,6 +94,7 @@ def run_gap_command(args: argparse.Namespace) -> int:
             "run_dir": str(args.run),
             "model": None if report.model_path is None else str(report.model_path),
             "metrics": report.summary,
+            "replay": {} if report.sim_run is None else report.sim_run.meta,
             **stats_json(report.phase_stats, report.findings),
         }
         out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

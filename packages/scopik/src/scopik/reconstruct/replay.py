@@ -22,14 +22,15 @@ Scope caveat carried over from the original finn implementation: this is an
 onboard-signal comparison. Rate/velocity signals are the honest comparison
 set; absolute pose is not validated.
 
-The stepping pattern (dt clamp + round(dt/timestep) inner steps) is ported
-from finn's replay_batch2_open_loop, where it is validated against hardware
-sysid runs.
+Intervals are rounded to physics steps and gaps are capped at MAX_DT_S.
+Timing adjustments are reported explicitly; assigned recording timestamps do
+not imply the simulator integrated exactly that elapsed time.
 """
 
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,6 +78,9 @@ def replay_commands(
     if len(times) < 2:
         raise ScopikError("need at least 2 telemetry rows to replay")
 
+    if not np.all(np.isfinite(times)) or np.any(np.diff(times) <= 0):
+        raise ScopikError("replay timestamps must be finite and strictly increasing")
+
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     data = mujoco.MjData(model)
 
@@ -86,7 +90,11 @@ def replay_commands(
         actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_name)
         if actuator_id < 0:
             raise ScopikError(f"model has no actuator {actuator_name!r}")
-        commands = np.nan_to_num(real_run.require_column(command_column), nan=0.0)
+        commands = real_run.require_column(command_column)
+        if len(commands) != len(times) or not np.all(np.isfinite(commands)):
+            raise ScopikError(
+                f"replay command {command_column!r} must have one finite value per row"
+            )
         actuator_ids.append((int(actuator_id), commands))
 
     samples: list[_SampleAddress] = []
@@ -97,7 +105,7 @@ def replay_commands(
         adr = int(model.sensor_adr[sensor_id])
         dim = int(model.sensor_dim[sensor_id])
         index = sample.index or 0
-        if index >= dim:
+        if index < 0 or index >= dim:
             raise ScopikError(
                 f"replay.sample {sample.name!r}: index {index} out of range for "
                 f"sensor {sample.sensor!r} (dim {dim})"
@@ -127,11 +135,22 @@ def replay_commands(
     n_out = len(times) - 1
     outputs = np.empty((n_out, len(samples)), dtype=float)
 
+    intervals = np.diff(times)
+    step_counts = np.maximum(1, np.rint(np.minimum(intervals, MAX_DT_S) / timestep)).astype(int)
+    timing_error = np.cumsum(step_counts * timestep - intervals)
+    timing = {
+        "clipped_intervals": int(np.count_nonzero(intervals > MAX_DT_S)),
+        "recorded_duration_s": float(times[-1] - times[0]),
+        "simulated_duration_s": float(np.sum(step_counts) * timestep),
+        "max_abs_time_error_s": float(np.max(np.abs(timing_error))),
+    }
+    if timing["clipped_intervals"] or timing["max_abs_time_error_s"] > timestep:
+        warnings.warn(f"replay integration time differs from recording: {timing}", stacklevel=2)
+
     for i in range(1, len(times)):
-        dt_s = max(0.0, min(MAX_DT_S, float(times[i] - times[i - 1])))
         for actuator_id, commands in actuator_ids:
             data.ctrl[actuator_id] = commands[i]
-        for _ in range(max(1, round(dt_s / timestep))):
+        for _ in range(step_counts[i - 1]):
             mujoco.mj_step(model, data)
             if hold is not None:
                 _apply_hold(data, hold)
@@ -151,6 +170,7 @@ def replay_commands(
     run.meta["model_path"] = str(xml_path)
     run.meta["replayed_from"] = real_run.meta.get("run_dir", "")
     run.meta["hold_upright"] = replay.hold_upright or ""
+    run.meta["timing"] = timing
     for k, sample in enumerate(replay.samples):
         run.signals[sample.name] = Signal(
             name=sample.name,

@@ -81,6 +81,12 @@ And the standing caveat: this is an **onboard-signal, open-loop** comparison.
 Rate and velocity signals are the honest comparison set; absolute pose is not
 validated by replay.
 
+Replay refuses non-finite commands and non-increasing timestamps rather than
+inventing inputs. Intervals are rounded to physics steps and gaps above 0.1 s
+are capped; the dashboard and JSON report expose clipped intervals and cumulative
+time error. Do not interpret lag as physical latency when these adjustments
+are significant.
+
 ## The profile
 
 One YAML file adapts scopik to a robot. Paths are relative to the profile file.
