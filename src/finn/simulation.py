@@ -608,7 +608,6 @@ def run_closed_loop(
     gain_yaw: float = 0.0,
     command_source: CommandSource | None = None,
     key_callback: Callable[[int], None] | None = None,
-    on_viewer_sync: Callable[[object], None] | None = None,
     on_tick: Callable[[int, dict[str, float], mujoco.MjData], None] | None = None,
 ) -> tuple[list[dict[str, float]], dict[str, float | bool]]:
     data = mujoco.MjData(model)
@@ -633,8 +632,6 @@ def run_closed_loop(
     with viewer_context as viewer:
         wall_start_s = time.perf_counter()
         if viewer is not None:
-            if on_viewer_sync is not None:
-                on_viewer_sync(viewer)
             viewer.sync()
 
         for tick in range(control_steps + 1):
@@ -731,8 +728,6 @@ def run_closed_loop(
             step_control_tick(model, data, config)
 
             if viewer is not None:
-                if on_viewer_sync is not None:
-                    on_viewer_sync(viewer)
                 viewer.sync()
             if pace_to_wall_clock:
                 target_wall_s = wall_start_s + (tick + 1) * config.control_dt_s

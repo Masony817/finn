@@ -7,6 +7,7 @@ import argparse
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,11 @@ import yaml
 from scipy.optimize import least_squares, lsq_linear
 
 from finn.telemetry import read_events as read_events
-from finn.telemetry import read_rows as read_batch1_rows
+from finn.telemetry import read_rows
 from finn.telemetry import read_schema as read_schema
+
+# Batch 1 runs end at power-off, so a final truncated row is normal, not an error.
+read_batch1_rows = partial(read_rows, strict=False)
 
 MOTION_VELOCITY_REV_S = 0.02
 MOTION_POSITION_REV = 0.01

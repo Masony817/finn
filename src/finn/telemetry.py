@@ -19,7 +19,10 @@ def read_schema(telemetry: Path) -> str | None:
     return None
 
 
-def read_rows(telemetry: Path) -> list[dict[str, str]]:
+def read_rows(telemetry: Path, *, strict: bool = True) -> list[dict[str, str]]:
+    """Rows after the embedded header. strict=False tolerates a capture truncated
+    mid-row (a power-off ends Batch 1 runs) instead of refusing the whole file."""
+
     if not telemetry.exists():
         return []
     data_lines = [line for line in telemetry.read_text().splitlines() if line.startswith("data,")]
@@ -30,13 +33,14 @@ def read_rows(telemetry: Path) -> list[dict[str, str]]:
     if header_index is None:
         return []
     header = data_lines[header_index].split(",")
-    for line_number, line in enumerate(data_lines[header_index + 1 :], start=header_index + 2):
-        field_count = len(line.split(","))
-        if field_count != len(header):
-            raise ValueError(
-                f"Malformed telemetry row in {telemetry} at data line {line_number}: "
-                f"expected {len(header)} fields, got {field_count}"
-            )
+    if strict:
+        for line_number, line in enumerate(data_lines[header_index + 1 :], start=header_index + 2):
+            field_count = len(line.split(","))
+            if field_count != len(header):
+                raise ValueError(
+                    f"Malformed telemetry row in {telemetry} at data line {line_number}: "
+                    f"expected {len(header)} fields, got {field_count}"
+                )
     return list(csv.DictReader(data_lines[header_index:]))
 
 

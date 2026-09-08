@@ -23,7 +23,7 @@ from scopik.live import LiveSession
 
 from finn import control, paths, reporting
 from finn import lqr as cli
-from finn import simulation as lqr
+from finn import simulation as sim
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = REPO_ROOT / "sim/generated/seeded/latest/finn.seeded.sim.xml"
@@ -291,14 +291,14 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     out_dir = args.out_dir or DEFAULT_OUT_ROOT / timestamp()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model = lqr.mujoco.MjModel.from_xml_path(str(args.model))
-    handles = lqr.inspect_model(model)
+    model = sim.mujoco.MjModel.from_xml_path(str(args.model))
+    handles = sim.inspect_model(model)
     target_pitch_rad = (
-        lqr.estimate_balance_trim_pitch_rad(model)
+        sim.estimate_balance_trim_pitch_rad(model)
         if args.target_pitch_rad is None
         else float(args.target_pitch_rad)
     )
-    config = lqr.SimConfig(
+    config = sim.SimConfig(
         control_dt_s=args.control_dt_s,
         duration_s=args.duration_s,
         initial_pitch_rad=(
@@ -319,20 +319,20 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         yaw_left_actuator_sign=cli.yaw_left_actuator_sign(args),
         drive=cli.drive_limits_from_args(args),
     )
-    lqr.validate_timing(model, config)
-    lqr.validate_linearization_torque(config, handles)
+    sim.validate_timing(model, config)
+    sim.validate_linearization_torque(config, handles)
 
-    estimator = lqr.calibrated_estimator(model, handles, config)
-    a_matrix, b_matrix = lqr.linearize_balance_dynamics(model, handles, estimator, config)
-    gain = lqr.discrete_lqr(
+    estimator = sim.calibrated_estimator(model, handles, config)
+    a_matrix, b_matrix = sim.linearize_balance_dynamics(model, handles, estimator, config)
+    gain = sim.discrete_lqr(
         a_matrix,
         b_matrix,
         np.diag(np.array(args.q_diag, dtype=float)),
         np.array([[float(args.r)]]),
     )
-    a_yaw, b_yaw = lqr.linearize_yaw_dynamics(model, handles, estimator, config)
+    a_yaw, b_yaw = sim.linearize_yaw_dynamics(model, handles, estimator, config)
     gain_yaw = float(
-        lqr.discrete_lqr(
+        sim.discrete_lqr(
             np.array([[a_yaw]]),
             np.array([[b_yaw]]),
             np.array([[float(args.q_yaw)]]),

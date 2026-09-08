@@ -47,8 +47,10 @@ def test_control_math_fixture_exercises_command_and_torque_safety(tmp_path: Path
 def test_python_and_firmware_agree_on_intermittent_command_traces(tmp_path: Path):
     executable = compile_fixture(FIXTURE.with_name("command_trace.cpp"), tmp_path)
     arbiter = CommandArbiter(DriveLimits())
+    # No command until 50 ms: both arbiters must agree they are stale before
+    # the first accepted intent, not only after it.
     commands = {
-        0: (0.3, 0.8),
+        50: (0.3, 0.8),
         100: (2.0, -2.0),
         210: (float("nan"), 0.0),
         230: (float("inf"), 0.0),

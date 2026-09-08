@@ -59,7 +59,8 @@ class CommandArbiter:
     shaped: DriveCommand = STOPPED
     requested: DriveCommand = STOPPED
     last_good_s: float | None = None
-    stale: bool = False
+    # True until the first accepted command, matching the firmware arbiter.
+    stale: bool = True
     rejected_samples: int = 0
     _warned: bool = False
 
@@ -131,6 +132,10 @@ def allocate_wheel_torques(
     envelope by construction and a saturated balance loop steers not at all.
     """
 
+    # Mirrors control_math.h: non-finite inputs are inert, never max torque.
+    # Python's clamp(nan, -l, l) would otherwise return l.
+    if not all(map(math.isfinite, (tau_balance_nm, tau_yaw_nm, limit_nm))) or limit_nm < 0.0:
+        return 0.0, 0.0
     tau_common = clamp(tau_balance_nm, -limit_nm, limit_nm)
     headroom_nm = limit_nm - abs(tau_common)
     return tau_common, clamp(tau_yaw_nm, -headroom_nm, headroom_nm)

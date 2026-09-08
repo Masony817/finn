@@ -144,7 +144,11 @@ def replay_commands(
         "simulated_duration_s": float(np.sum(step_counts) * timestep),
         "max_abs_time_error_s": float(np.max(np.abs(timing_error))),
     }
-    if timing["clipped_intervals"] or timing["max_abs_time_error_s"] > timestep:
+    # Rounding error accumulates a fraction of a timestep per interval, so an
+    # absolute gate fires on every long ordinary capture; 1% of the recording is
+    # the point where lag estimates start absorbing integration-time skew.
+    drift_gate_s = max(timestep, 0.01 * timing["recorded_duration_s"])
+    if timing["clipped_intervals"] or timing["max_abs_time_error_s"] > drift_gate_s:
         warnings.warn(f"replay integration time differs from recording: {timing}", stacklevel=2)
 
     for i in range(1, len(times)):

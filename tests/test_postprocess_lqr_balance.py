@@ -87,7 +87,9 @@ def balance_rows(count: int, *, torque: float, seed: int = 0) -> list[dict[str, 
             make_row(
                 i,
                 "balance",
-                pitch_rad=0.0411449906 + 0.002 + float(rng.normal(0, 1e-4)),
+                # Consistent with the closed loop, where tau ~= -Kp * pitch_error:
+                # a positive steady torque can only coexist with a negative error.
+                pitch_rad=0.0411449906 - torque / 62.0 + float(rng.normal(0, 1e-4)),
                 pitch_rate_rad_s=float(rng.normal(0, 0.01)),
                 forward_vel_m_s=float(rng.normal(0, 0.005)),
                 balance_tau_nm=torque + float(rng.normal(0, 0.01)),
@@ -150,9 +152,13 @@ def test_a_steady_torque_bias_identifies_a_trim_correction(tmp_path: Path):
 
     assert trim["status"] == "identified"
     assert trim["steady_samples"] >= post.MIN_STEADY_SAMPLES
-    assert trim["trim_offset_rad"] > 0.0
-    # 2*tau / (m*g*l) with the committed measurements.
-    assert trim["trim_offset_rad"] == pytest.approx(math.asin(2 * 0.05 / 15.936), rel=0.05)
+    # The robot holds station below the commanded trim while pushing forward, so
+    # the true balance pitch -- and the suggested target -- sit below the target.
+    assert trim["trim_offset_rad"] < 0.0
+    assert trim["suggested_target_pitch_rad"] < 0.0411449906
+    assert trim["suggested_com_fore_aft_shift_m"] < 0.0
+    # Magnitude is 2*tau / (m*g*l) with the committed measurements.
+    assert abs(trim["trim_offset_rad"]) == pytest.approx(math.asin(2 * 0.05 / 15.936), rel=0.05)
 
 
 def test_torque_inside_its_own_noise_is_not_reported_as_a_correction(tmp_path: Path):
@@ -314,6 +320,31 @@ def test_a_preflight_only_run_still_writes_a_report(tmp_path: Path):
     out.mkdir()
     post.write_report(out / "report.md", derived)
     assert "Recording integrity" in (out / "report.md").read_text(encoding="utf-8")
+
+
+def test_a_healthy_quaternion_stream_reports_its_true_rate(tmp_path: Path):
+    """The dedup tolerance once sat above the 10 ms report interval, collapsing a
+    perfect 100 Hz stream to one arrival -- the same signature as a dead sensor,
+    on the line an operator reads before releasing the robot."""
+
+    rows = [
+        make_row(i, "preflight", imu_ok=1, imu_age_us=(i % 3) * 100, imu_age_ms=0)
+        for i in range(300)
+    ]
+    audit = analyze(write_run(tmp_path, rows))["integrity"]
+
+    assert audit["rotation_vector"]["arrivals"] >= 295
+    assert audit["rotation_vector"]["rate_hz"] == pytest.approx(100.0, rel=0.05)
+
+
+def test_telemetry_rows_sharing_one_quaternion_arrival_are_deduplicated(tmp_path: Path):
+    rows = []
+    for i in range(300):
+        # Pairs of rows carry the same arrival stamp: age grows 10 ms within a pair.
+        rows.append(make_row(i, "preflight", imu_ok=1, imu_age_us=(i % 2) * 10_000))
+    audit = analyze(write_run(tmp_path, rows))["integrity"]
+
+    assert audit["rotation_vector"]["rate_hz"] == pytest.approx(50.0, rel=0.05)
 
 
 def test_a_dead_rotation_vector_is_reported_even_though_the_imu_reads_alive(tmp_path: Path):

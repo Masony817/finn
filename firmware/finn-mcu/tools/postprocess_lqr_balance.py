@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -223,7 +224,11 @@ def rotation_vector_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not math.isfinite(stamp_us):
             continue
         stamp_s = stamp_us / 1e6
-        if not arrivals or abs(stamp_s - arrivals[-1]) > 0.05:
+        # Dedup tolerance must sit below the 10 ms report interval and above the
+        # us-scale jitter between imuQuatAgeUs() and the printf's micros() call;
+        # at 0.05 it swallowed every arrival after the first and reported a
+        # healthy 100 Hz stream as dead.
+        if not arrivals or abs(stamp_s - arrivals[-1]) > 1.0e-3:
             arrivals.append(stamp_s)
     span_s = (rows[-1]["t_us"] - rows[0]["t_us"]) / 1e6
     ages = [r.get("imu_age_ms", math.nan) for r in rows]
@@ -845,7 +850,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         derived = analyze_run(args.run_dir, args.measurements, args.seeded_header)
     except LqrBalancePostprocessError as error:
-        print(f"error: {error}")
+        print(f"error: {error}", file=sys.stderr)
         return 1
 
     out_dir = args.run_dir / "postprocess"

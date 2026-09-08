@@ -247,8 +247,10 @@ def test_balance_runs_identically_with_no_command_source():
     """Invariant 1: the balance loop is complete without anything above it.
 
     An explicit stop command and no command source at all must produce the same
-    rollout, which is what lets the generated firmware header keep being exported
-    from the plain station-keeping path.
+    control behavior, which is what lets the generated firmware header keep being
+    exported from the plain station-keeping path. command_stale is the one honest
+    difference: with no source the arbiter never receives a command, so it stays
+    stale, exactly as the firmware reports before the first DRIVE.
     """
 
     without, _ = _rollout(command_source=None)
@@ -256,7 +258,10 @@ def test_balance_runs_identically_with_no_command_source():
 
     assert len(without) == len(with_stop)
     for left, right in zip(without, with_stop, strict=True):
-        assert left == right
+        assert {k: v for k, v in left.items() if k != "command_stale"} == {
+            k: v for k, v in right.items() if k != "command_stale"
+        }
+    assert all(row["command_stale"] == 1.0 for row in without)
 
 
 def test_positive_yaw_torque_turns_the_model_left():
