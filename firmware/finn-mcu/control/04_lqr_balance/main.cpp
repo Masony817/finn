@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "control_math.h"
 #include "lqr_safety_config.h"
 #include "lqr_seeded_config.h"
 
@@ -59,21 +60,19 @@ static_assert(
     FinnLqrSafety::kControlBudgetUs < FinnLqrSeeded::kControlPeriodUs,
     "the control budget has to fit inside one control period");
 
-float clampFloat(const float value, const float lower, const float upper) {
-  if (value < lower) return lower;
-  if (value > upper) return upper;
-  return value;
-}
-
 float wrapPi(float value) {
   while (value > PI) value -= 2.0f * PI;
   while (value < -PI) value += 2.0f * PI;
   return value;
 }
 
-float slewFloat(const float current, const float target, const float max_step) {
-  return current + clampFloat(target - current, -max_step, max_step);
-}
+const FinnLqrControl::CommandLimits kCommandLimits = {
+    FinnLqrSeeded::kMaxForwardVelMS,
+    FinnLqrSeeded::kMaxYawRateRadS,
+    FinnLqrSeeded::kDriveAccelLimitMS2,
+    FinnLqrSeeded::kDriveYawAccelLimitRadS2,
+    FinnLqrSeeded::kCommandTimeoutMs,
+};
 
 ACAN_T4FD_Settings can_settings(kCanArbitrationBitrate, DataBitRateFactor::x1);
 MoteusTeensyCanFD can_bus(ACAN_T4::can3, can_settings);
@@ -188,63 +187,7 @@ bool last_saturated = false;
 // command source are the same event here: hold briefly, then ramp to zero.
 // Ramping and not stepping is the point -- a step is itself a disturbance the
 // balance loop would have to reject.
-struct CommandArbiter {
-  float requested_forward_m_s = 0.0f;
-  float requested_yaw_rad_s = 0.0f;
-  float forward_m_s = 0.0f;
-  float yaw_rad_s = 0.0f;
-  uint32_t last_command_ms = 0;
-  bool has_command = false;
-  bool stale = true;
-
-  void reset() {
-    requested_forward_m_s = 0.0f;
-    requested_yaw_rad_s = 0.0f;
-    forward_m_s = 0.0f;
-    yaw_rad_s = 0.0f;
-    last_command_ms = 0;
-    has_command = false;
-    stale = true;
-  }
-
-  void submit(const float forward_m_s_in, const float yaw_rad_s_in, const uint32_t now_ms) {
-    requested_forward_m_s = clampFloat(
-        forward_m_s_in, -FinnLqrSeeded::kMaxForwardVelMS, FinnLqrSeeded::kMaxForwardVelMS);
-    requested_yaw_rad_s = clampFloat(
-        yaw_rad_s_in, -FinnLqrSeeded::kMaxYawRateRadS, FinnLqrSeeded::kMaxYawRateRadS);
-    last_command_ms = now_ms;
-    has_command = true;
-    stale = false;
-  }
-
-  void step(const uint32_t now_ms, const float dt_s) {
-    const bool expired =
-        !has_command || (now_ms - last_command_ms) > FinnLqrSeeded::kCommandTimeoutMs;
-    if (expired) {
-      stale = true;
-      requested_forward_m_s = 0.0f;
-      requested_yaw_rad_s = 0.0f;
-    }
-    forward_m_s = slewFloat(
-        forward_m_s, requested_forward_m_s, FinnLqrSeeded::kDriveAccelLimitMS2 * dt_s);
-    yaw_rad_s = slewFloat(
-        yaw_rad_s, requested_yaw_rad_s, FinnLqrSeeded::kDriveYawAccelLimitRadS2 * dt_s);
-  }
-};
-
-CommandArbiter arbiter;
-
-// Yaw gets only the headroom balance leaves behind. Clamping each wheel after
-// summing both channels would instead let a turn request eat balance authority
-// asymmetrically, which is a fall.
-void allocateWheelTorques(
-    const float tau_balance_nm, const float tau_yaw_nm, float* tau_common_nm, float* tau_yaw_out_nm) {
-  const float limit = FinnLqrSafety::kHardTorqueLimitNm;
-  const float common = clampFloat(tau_balance_nm, -limit, limit);
-  const float headroom = limit - fabsf(common);
-  *tau_common_nm = common;
-  *tau_yaw_out_nm = clampFloat(tau_yaw_nm, -headroom, headroom);
-}
+FinnLqrControl::CommandArbiter arbiter;
 
 // ---- Arming preflight ----
 
@@ -402,7 +345,7 @@ Moteus::PositionMode::Command torqueCommand(const float torque_nm) {
   Moteus::PositionMode::Command command;
   command.position = NaN;
   command.velocity = 0.0;
-  command.feedforward_torque = clampFloat(
+  command.feedforward_torque = FinnLqrControl::clampFloat(
       torque_nm, -FinnLqrSafety::kHardTorqueLimitNm, FinnLqrSafety::kHardTorqueLimitNm);
   command.kp_scale = 0.0;
   command.kd_scale = 0.0;
@@ -440,11 +383,19 @@ void latchFault(const char* reason) {
 }
 
 bool sendWheelTorques(const float tau_common_nm, const float tau_yaw_nm) {
+  if (!FinnLqrControl::isFinite(tau_common_nm) || !FinnLqrControl::isFinite(tau_yaw_nm)) {
+    latchFault("non_finite_torque_command");
+    return false;
+  }
   const float yaw_left = FinnLqrSeeded::kRealLeftActuatorYawSign * tau_yaw_nm;
   const float left_request =
       FinnLqrSeeded::kRealLeftCommonTorqueSign * tau_common_nm + yaw_left;
   const float right_request =
       FinnLqrSeeded::kRealRightCommonTorqueSign * tau_common_nm - yaw_left;
+  if (!FinnLqrControl::isFinite(left_request) || !FinnLqrControl::isFinite(right_request)) {
+    latchFault("non_finite_torque_command");
+    return false;
+  }
   const bool left_ok = left_moteus.SetPosition(torqueCommand(left_request), &torque_format);
   const bool right_ok = right_moteus.SetPosition(torqueCommand(right_request), &torque_format);
   updateHealth(left_health, left_ok);
@@ -603,13 +554,35 @@ bool checkActiveSafety() {
     latchFault("host_heartbeat_timeout");
     return false;
   }
+
+  const QueryValues& left = left_moteus.last_result().values;
+  const QueryValues& right = right_moteus.last_result().values;
+  const FinnLqrControl::ActiveControlState active_control_state = {
+      imu.quat_real,
+      imu.quat_i,
+      imu.quat_j,
+      imu.quat_k,
+      imu.gyro_x_rad_s,
+      imu.gyro_y_rad_s,
+      pitch_zero_raw_rad,
+      static_cast<float>(left.position),
+      static_cast<float>(left.velocity),
+      static_cast<float>(left.temperature),
+      static_cast<float>(right.position),
+      static_cast<float>(right.velocity),
+      static_cast<float>(right.temperature),
+      start_left_pos_rev,
+      start_right_pos_rev,
+      reference_forward_pos_m,
+  };
+  if (!FinnLqrControl::activeControlStateIsFinite(active_control_state)) {
+    latchFault("non_finite_active_state");
+    return false;
+  }
   if (fabsf(pitchRad()) > FinnLqrSafety::kMaxAbsPitchRad) {
     latchFault("pitch_limit");
     return false;
   }
-
-  const QueryValues& left = left_moteus.last_result().values;
-  const QueryValues& right = right_moteus.last_result().values;
   if (left.fault != 0 || right.fault != 0) {
     latchFault("moteus_fault");
     return false;
@@ -653,12 +626,15 @@ void runControllerTick() {
   }
 
   const float dt_s = static_cast<float>(FinnLqrSeeded::kControlPeriodUs) * 1.0e-6f;
-  arbiter.step(millis(), dt_s);
+  if (!FinnLqrControl::stepCommandArbiter(&arbiter, millis(), dt_s, kCommandLimits)) {
+    latchFault("non_finite_command_state");
+    return;
+  }
 
   const float forward_pos_m = forwardPositionM();
   if (FinnLqrSafety::kDriveEnabled) {
     reference_forward_pos_m += arbiter.forward_m_s * dt_s;
-    reference_forward_pos_m = clampFloat(
+    reference_forward_pos_m = FinnLqrControl::clampFloat(
         reference_forward_pos_m,
         forward_pos_m - FinnLqrSeeded::kRefPositionBandM,
         forward_pos_m + FinnLqrSeeded::kRefPositionBandM);
@@ -667,7 +643,7 @@ void runControllerTick() {
   }
 
   const float position_error_m = forward_pos_m - reference_forward_pos_m;
-  const float position_correction_m_s = clampFloat(
+  const float position_correction_m_s = FinnLqrControl::clampFloat(
       -FinnLqrSeeded::kPositionHoldKpS * position_error_m,
       -FinnLqrSeeded::kMaxPositionCorrectionMS,
       FinnLqrSeeded::kMaxPositionCorrectionMS);
@@ -687,8 +663,14 @@ void runControllerTick() {
           ? -FinnLqrSeeded::kGainYawRate * (yawRateRadS() - arbiter.yaw_rad_s)
           : 0.0f;
 
-  allocateWheelTorques(
-      last_balance_tau_raw_nm, raw_yaw_tau_nm, &last_balance_tau_nm, &last_yaw_tau_nm);
+  const FinnLqrControl::WheelTorques torque_allocation = FinnLqrControl::allocateWheelTorques(
+      last_balance_tau_raw_nm, raw_yaw_tau_nm, FinnLqrSafety::kHardTorqueLimitNm);
+  if (!torque_allocation.valid) {
+    latchFault("non_finite_control_output");
+    return;
+  }
+  last_balance_tau_nm = torque_allocation.common_nm;
+  last_yaw_tau_nm = torque_allocation.yaw_nm;
   last_saturated = fabsf(last_balance_tau_raw_nm - last_balance_tau_nm) > 1.0e-6f;
   sendWheelTorques(last_balance_tau_nm, last_yaw_tau_nm);
   last_tick_duration_us = micros() - tick_start_us;
@@ -835,13 +817,16 @@ void startPreflight(const bool arm_on_pass) {
   preflight.imu_reset_start = imu.reset_count;
   preflight_arms_on_pass = arm_on_pass;
   preflight_failures = 0;
-  arbiter.reset();
+  FinnLqrControl::resetCommandArbiter(&arbiter);
   reference_forward_pos_m = 0.0f;
   start_left_pos_rev = static_cast<float>(left_moteus.last_result().values.position);
   start_right_pos_rev = static_cast<float>(right_moteus.last_result().values.position);
   state = SystemState::kPreflight;
   state_start_ms = preflight.start_ms;
   next_preflight_poll_us = micros();
+  // The idle telemetry deadline can sit up to 1 s away; left stale it starves
+  // telemetry_rate_hz of half its 2 s window and fails a healthy preflight.
+  next_telemetry_us = micros();
   printEvent(
       "preflight_start",
       arm_on_pass ? "hold_finn_still_near_trim_motors_stopped" : "dry_run_will_not_arm");
@@ -1036,6 +1021,7 @@ void startConventionCheck() {
   start_right_pos_rev = static_cast<float>(right_moteus.last_result().values.position);
   state = SystemState::kConventionCheck;
   state_start_ms = millis();
+  next_telemetry_us = micros();
   printEvent("convention_check_start", "motors_stopped_tip_and_roll_forward_by_hand");
 }
 
@@ -1072,10 +1058,11 @@ void startLqr() {
   last_control_tick_us = 0;
   last_control_dt_us = 0;
   last_tick_duration_us = 0;
-  arbiter.reset();
+  FinnLqrControl::resetCommandArbiter(&arbiter);
   state = SystemState::kRunningLqr;
   state_start_ms = millis();
   next_control_us = micros();
+  next_telemetry_us = micros();
   printEvent("lqr_start", "release_robot_operator_ready_to_catch");
 }
 
@@ -1128,7 +1115,9 @@ void handleDrive(const char* argument) {
     printEvent("drive_rejected", "non_finite_command");
     return;
   }
-  arbiter.submit(forward_m_s, yaw_rad_s, millis());
+  if (!FinnLqrControl::submitCommand(&arbiter, forward_m_s, yaw_rad_s, millis(), kCommandLimits)) {
+    printEvent("drive_rejected", "non_finite_command");
+  }
 }
 
 void handleCommand(const char* line) {
@@ -1168,7 +1157,7 @@ void handleCommand(const char* line) {
       completeTrial("operator_stop_motors_stopped");
     } else {
       sendAllStop();
-      arbiter.reset();
+      FinnLqrControl::resetCommandArbiter(&arbiter);
       if (state == SystemState::kFault) {
         printEvent("stop", "motors_stopped_fault_remains_latched");
       } else {
@@ -1178,7 +1167,7 @@ void handleCommand(const char* line) {
     }
   } else if (strcmp(line, "CLEAR") == 0) {
     sendAllStop();
-    arbiter.reset();
+    FinnLqrControl::resetCommandArbiter(&arbiter);
     fault_reason[0] = '\0';
     state = SystemState::kSafeIdle;
     printEvent("fault_cleared", "safe_idle");

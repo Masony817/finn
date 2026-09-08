@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import math
 import re
@@ -25,6 +26,19 @@ def header_value(name: str, text: str) -> str:
     match = re.search(rf"{re.escape(name)}\s*=\s*([^;]+);", text)
     assert match, f"missing {name} from generated firmware header"
     return match.group(1).strip()
+
+
+def test_cppcheck_targets_the_same_sketch_as_each_firmware_build():
+    config = configparser.ConfigParser()
+    config.read(PLATFORMIO)
+    root = PLATFORMIO.parent
+    for section in config.sections():
+        if not section.startswith("env:"):
+            continue
+        build = re.search(r"\+<([^>]+)>", config[section]["build_src_filter"]).group(1)
+        check = re.search(r"\+<([^>]+)>", config[section]["check_src_filters"]).group(1)
+        assert (root / "src" / build).resolve() == (root / check).resolve()
+        assert (root / check / "main.cpp").is_file()
 
 
 def test_model_actuator_gears_match_the_convention_contract():
@@ -84,8 +98,7 @@ def test_generated_header_tracks_the_yaw_sign_contract():
 def test_the_drive_envelope_reaches_the_firmware_header():
     """Steering constants have to travel the same generated path as the gain.
 
-    The firmware does not consume these yet. Exporting them now is what keeps the
-    later port a firmware-only change instead of a second place to tune a robot.
+    Firmware consumes the generated values rather than tuning them separately.
     """
 
     header = HEADER.read_text(encoding="utf-8")
